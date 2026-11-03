@@ -13,8 +13,8 @@ description: >-
 
 > [!IMPORTANT]
 > **`aimail` is a pre-installed, standalone system CLI utility in `$PATH`.**
-> - **DO NOT** inspect, browse, or run `ls` inside `~/Desktop/aimail` or internal directories.
-> - **DO NOT** read, audit, or edit `aimail.py` or internal database files.
+> - **DO NOT** inspect, browse, locate, or run `ls` on internal system directories or mailbox files.
+> - **DO NOT** read, audit, or edit internal database files or implementation scripts.
 > - Treat `aimail` strictly as an opaque black-box command-line tool (like `git` or `curl`).
 > - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail extract`, `aimail users`).
 
