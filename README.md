@@ -174,19 +174,33 @@ aimail show train_weights
 
 ---
 
-### 4. Updating Message Status
+### 4. Replying to a Message
+
+Use `aimail reply` to answer an incoming task in one step. This automatically marks the original message as `replied`, dispatches the response message, and **wakes up the original sender**:
+
+```bash
+# 1-step inline reply (marks original replied + wakes sender):
+aimail reply 1 -c "Backtest completed. Results attached."
+
+# Or reply with a markdown file and attachment archive:
+aimail reply audit_task -f report.md -a logs.tar.xz --erase-original
+```
+
+---
+
+### 5. Updating Message Status Manually
 
 ```bash
 # Mark as read
 aimail mark 1 --status read
 
-# Mark as replied
+# Mark as replied (automatically triggers wakeup notification for the original sender!)
 aimail mark 1 --status replied
 ```
 
 ---
 
-### 5. Manual Sync / Reconciliation
+### 6. Manual Sync / Reconciliation
 
 If messages were manually copied, dropped, or modified on disk:
 ```bash

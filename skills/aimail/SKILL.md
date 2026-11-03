@@ -72,14 +72,15 @@ aimail mark <message_id> --status read
 ```
 
 ### 4. Execute Task & Send Reply
-Once work is completed:
+Once work is completed, use `aimail reply` to close the loop in one command (this marks the original message as replied, creates the reply message, and automatically wakes up the sender):
 ```bash
-# Mark original message as replied
-aimail mark <message_id> --status replied
+# 1-step inline reply (marks original replied + wakes sender):
+aimail reply <message_id_or_topic> -c "Task completed successfully. Output saved to ..."
 
-# Send completion notice back to the original sender
-aimail send --from <my_id> --to <sender_id> --topic <topic>_reply -c "Task completed successfully. Results saved to ..."
+# Or reply with a markdown file and attachment:
+aimail reply <message_id_or_topic> -f results.md -a output.tar.xz --erase-original
 ```
+*(Alternatively, running `aimail mark <id> --status replied` will also automatically notify and wake up the original sender).*
 
 ---
 

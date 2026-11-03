@@ -223,26 +223,34 @@ def cmd_mark(args):
     new_status = args.status
 
     if target.isdigit():
-        cursor.execute("""
-            UPDATE messages
-            SET status = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        """, (new_status, int(target)))
+        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
     else:
-        cursor.execute("""
-            UPDATE messages
-            SET status = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE md_file_path = ? OR md_file_path LIKE ?
-        """, (new_status, target, f"%{target}%"))
+        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
 
-    if cursor.rowcount == 0:
+    msg_row = cursor.fetchone()
+    if not msg_row:
         print(f"No message found matching identifier '{target}'.", file=sys.stderr)
         conn.close()
         sys.exit(1)
 
+    cursor.execute("""
+        UPDATE messages
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (new_status, msg_row["id"]))
     conn.commit()
     conn.close()
     print(f"Message '{target}' marked as '{new_status}'.")
+
+    # If marked as replied, wake up the original sender
+    if new_status == "replied" and not getattr(args, "no_wakeup", False):
+        trigger_wakeup(
+            receiver=msg_row["sender_id"],
+            sender=msg_row["receiver_id"],
+            topic=f"{msg_row['topic']}_replied",
+            file_path=msg_row["md_file_path"],
+            messages_dir=messages_dir
+        )
 
 
 def cmd_show(args):
@@ -432,6 +440,47 @@ def cmd_send(args):
                 print(f"Warning: Failed to erase original attachment: {e}", file=sys.stderr)
 
 
+def cmd_reply(args):
+    messages_dir = Path(args.dir).resolve()
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    target = args.target
+    if target.isdigit():
+        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
+    else:
+        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
+    msg_row = cursor.fetchone()
+
+    if not msg_row:
+        print(f"Error: Original message '{target}' not found.", file=sys.stderr)
+        conn.close()
+        sys.exit(1)
+
+    original_id = msg_row["id"]
+    original_sender = msg_row["sender_id"]
+    original_receiver = msg_row["receiver_id"]
+    original_topic = msg_row["topic"]
+
+    # Mark original message as replied
+    cursor.execute("""
+        UPDATE messages
+        SET status = 'replied', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (original_id,))
+    conn.commit()
+    conn.close()
+    print(f"Original message #{original_id} marked as 'replied'.")
+
+    # Set up parameters for cmd_send
+    args.sender = getattr(args, "sender", None) or original_receiver
+    args.receiver = original_sender
+    args.topic = f"{original_topic}_reply"
+    args.timestamp = getattr(args, "timestamp", None)
+
+    cmd_send(args)
+
+
 def cmd_user(args):
     messages_dir = Path(args.dir).resolve()
     conn = get_connection(messages_dir)
@@ -547,6 +596,21 @@ def main():
     p_mark = subparsers.add_parser("mark", help="Update message status")
     p_mark.add_argument("target", help="Message ID or filename")
     p_mark.add_argument("--status", choices=["new", "read", "replied"], required=True, help="New status")
+    p_mark.add_argument("--no-wakeup", action="store_true", help="Skip triggering sender's wakeup on reply")
+
+    # reply
+    p_reply = subparsers.add_parser("reply", help="Reply to a message, automatically marking original as replied and waking sender")
+    p_reply.add_argument("target", help="Original message ID or filename to reply to")
+    p_reply.add_argument("--from", dest="sender", help="Reply sender ID (defaults to original receiver)")
+    
+    content_group_reply = p_reply.add_mutually_exclusive_group(required=True)
+    content_group_reply.add_argument("--file", "-f", help="Path to reply source markdown file")
+    content_group_reply.add_argument("--content", "-c", help="Direct markdown text string content")
+
+    p_reply.add_argument("--attach", "-a", help="Path to attachment file (e.g. tarball .tar.xz)")
+    p_reply.add_argument("--erase-original", "--erase", action="store_true", help="Erase original file(s) after sending")
+    p_reply.add_argument("--timestamp", help="Custom timestamp (default: current local timestamp YYYYMMDD_HHMMSS)")
+    p_reply.add_argument("--no-wakeup", action="store_true", help="Skip triggering sender's wakeup")
 
     # show
     p_show = subparsers.add_parser("show", help="Show message details and content")
@@ -606,6 +670,8 @@ def main():
         cmd_show(args)
     elif args.command == "send":
         cmd_send(args)
+    elif args.command == "reply":
+        cmd_reply(args)
     elif args.command == "user":
         cmd_user(args)
     elif args.command == "users":
