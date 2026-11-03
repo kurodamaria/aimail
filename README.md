@@ -188,7 +188,18 @@ aimail reply audit_task -f report.md -a logs.tar.xz --erase-original
 
 ---
 
-### 5. Updating Message Status Manually
+### 5. Extracting Attachments
+
+When a message contains a binary archive or dataset payload, unpack it directly into your project workspace without touching internal mailbox paths:
+
+```bash
+# Extracts archive directly into current directory (or specified path):
+aimail extract 1 --out ./build_inputs
+```
+
+---
+
+### 6. Updating Message Status Manually
 
 ```bash
 # Mark as read
@@ -200,7 +211,7 @@ aimail mark 1 --status replied
 
 ---
 
-### 6. Manual Sync / Reconciliation
+### 7. Manual Sync / Reconciliation
 
 If messages were manually copied, dropped, or modified on disk:
 ```bash
@@ -210,7 +221,7 @@ aimail sync
 
 ---
 
-### 7. Agent Directory & Discovery
+### 8. Agent Directory & Discovery
 
 `aimail` includes an agent capability registry so agents and operators know who is available and what they can do:
 
@@ -239,7 +250,7 @@ aimail user register --id bot --client custom --desc "Custom runner" --keywords 
 
 ---
 
-### 8. Automatic Wakeup / Notifications
+### 9. Automatic Wakeup / Notifications
 
 When a message is sent via `aimail send`, the recipient's wakeup handler is triggered automatically in a detached background process:
 

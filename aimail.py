@@ -481,6 +481,55 @@ def cmd_reply(args):
     cmd_send(args)
 
 
+def cmd_extract(args):
+    messages_dir = Path(args.dir).resolve()
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    target = args.target
+    if target.isdigit():
+        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
+    else:
+        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        print(f"Error: Message '{target}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if not row["attachment_path"]:
+        print(f"Message #{row['id']} ('{row['topic']}') has no attachment.", file=sys.stderr)
+        sys.exit(1)
+
+    archive_path = messages_dir / row["attachment_path"]
+    if not archive_path.exists():
+        archive_path = messages_dir / ATTACHMENTS_SUBDIR / Path(row["attachment_path"]).name
+
+    if not archive_path.exists():
+        print(f"Error: Attachment file '{archive_path}' not found on disk.", file=sys.stderr)
+        sys.exit(1)
+
+    out_dir = Path(args.out or ".").resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    name_lower = archive_path.name.lower()
+    if name_lower.endswith((".tar.xz", ".tar.gz", ".tar.bz2", ".tar", ".tgz")):
+        import tarfile
+        with tarfile.open(archive_path) as tar:
+            tar.extractall(path=out_dir)
+        print(f"Unpacked attachment '{archive_path.name}' into: {out_dir}")
+    elif name_lower.endswith(".zip"):
+        import zipfile
+        with zipfile.ZipFile(archive_path) as z:
+            z.extractall(path=out_dir)
+        print(f"Unzipped attachment '{archive_path.name}' into: {out_dir}")
+    else:
+        dest_file = out_dir / archive_path.name
+        shutil.copy2(archive_path, dest_file)
+        print(f"Copied attachment '{archive_path.name}' to: {dest_file}")
+
+
 def cmd_user(args):
     messages_dir = Path(args.dir).resolve()
     conn = get_connection(messages_dir)
@@ -631,6 +680,11 @@ def main():
     p_send.add_argument("--timestamp", help="Custom timestamp (default: current local timestamp YYYYMMDD_HHMMSS)")
     p_send.add_argument("--no-wakeup", action="store_true", help="Skip triggering recipient's automatic wakeup command")
 
+    # extract
+    p_ext = subparsers.add_parser("extract", help="Extract or copy a message's attachment to a target directory")
+    p_ext.add_argument("target", help="Message ID or filename")
+    p_ext.add_argument("--out", "-o", default=".", help="Output directory to extract/copy into (default: current directory)")
+
     # user
     p_user = subparsers.add_parser("user", help="Manage and discover agent users in the directory")
     p_user_sub = p_user.add_subparsers(dest="user_action", required=True)
@@ -672,6 +726,8 @@ def main():
         cmd_send(args)
     elif args.command == "reply":
         cmd_reply(args)
+    elif args.command == "extract":
+        cmd_extract(args)
     elif args.command == "user":
         cmd_user(args)
     elif args.command == "users":

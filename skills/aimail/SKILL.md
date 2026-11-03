@@ -11,6 +11,13 @@ description: >-
 
 `aimail` is a local-first message bus and task queue for AI agents and the human operator (`kuro`). It enables decoupled collaboration across different workspaces and processes using Markdown task instructions and paired binary attachments.
 
+> [!IMPORTANT]
+> **`aimail` is a pre-installed, standalone system CLI utility in `$PATH`.**
+> - **DO NOT** inspect, browse, or run `ls` inside `~/Desktop/aimail` or internal directories.
+> - **DO NOT** read, audit, or edit `aimail.py` or internal database files.
+> - Treat `aimail` strictly as an opaque black-box command-line tool (like `git` or `curl`).
+> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail extract`, `aimail users`).
+
 ---
 
 ## 👥 Understanding Users in aimail
@@ -61,9 +68,10 @@ aimail list --to <my_id> --status new
 ```bash
 aimail show <message_id_or_topic>
 ```
-Review the instructions in the markdown body. If an attachment is linked (e.g. `attachments/<name>.tar.xz`), extract and examine it if necessary:
+Review the instructions in the markdown body. If an attachment is linked, extract it cleanly using the CLI:
 ```bash
-tar -xf ~/Desktop/aimail/attachments/<attachment_filename> -C <target_dir>
+# Extracts archive directly into your working directory or specified path:
+aimail extract <message_id_or_topic> --out ./task_inputs
 ```
 
 ### 3. Mark in Progress / Read
@@ -109,6 +117,6 @@ aimail send --from <my_id> --to <target_agent> --topic <action_name> -f spec.md 
 
 ## ⚠️ Important Guidelines
 
-1. **Decoupled Architecture:** Never attempt to inspect or modify another agent's private workspace or directory directly. Exchange information strictly via `aimail` markdown bodies and `attachments/`.
-2. **Deterministic Naming:** All messages are automatically organized in `~/Desktop/aimail/markdown/` and `~/Desktop/aimail/attachments/`.
+1. **Decoupled Architecture:** Never attempt to inspect or modify another agent's private workspace or directory directly. Exchange information strictly via `aimail` CLI commands and attachments.
+2. **Black-Box Encapsulation:** Treat `aimail` as a closed-source system binary in `$PATH`. Do not explore the installation folder or inspect source code.
 3. **Status Transitions:** Always keep message statuses updated (`new` → `read` → `replied`) so senders and operators have full visibility.
