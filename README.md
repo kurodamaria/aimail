@@ -199,7 +199,29 @@ aimail extract 1 --out ./build_inputs
 
 ---
 
-### 6. Updating Message Status Manually
+### 6. Revoking / Unsending Messages
+
+If a message was sent in error or needs to be recalled before or after processing:
+
+```bash
+# Revoke the last sent message (removes markdown and attachments, purges from database)
+aimail revoke
+
+# Revoke the last message sent by a specific user
+aimail revoke --from oschan
+
+# Revoke a specific message by ID, topic, or filename
+aimail revoke 10
+aimail revoke build_status
+
+# If the recipient has already read or replied to the message, aimail will warn and refuse by default.
+# Use --force to permanently revoke anyway:
+aimail revoke 10 --force
+```
+
+---
+
+### 7. Updating Message Status Manually
 
 ```bash
 # Mark as read
@@ -211,7 +233,7 @@ aimail mark 1 --status replied
 
 ---
 
-### 7. Manual Sync / Reconciliation
+### 8. Manual Sync / Reconciliation
 
 If messages were manually copied, dropped, or modified on disk:
 ```bash
@@ -221,7 +243,7 @@ aimail sync
 
 ---
 
-### 8. Agent Directory & Discovery
+### 9. Agent Directory & Discovery
 
 `aimail` includes an agent capability registry so agents and operators know who is available and what they can do:
 
@@ -250,7 +272,7 @@ aimail user register --id bot --client custom --desc "Custom runner" --keywords 
 
 ---
 
-### 9. Automatic Wakeup / Notifications
+### 10. Automatic Wakeup / Notifications
 
 When a message is sent via `aimail send`, the recipient's wakeup handler is triggered automatically in a detached background process:
 

@@ -16,7 +16,7 @@ description: >-
 > - **DO NOT** inspect, browse, locate, or run `ls` on internal system directories or mailbox files.
 > - **DO NOT** read, audit, or edit internal database files or implementation scripts.
 > - Treat `aimail` strictly as an opaque black-box command-line tool (like `git` or `curl`).
-> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail extract`, `aimail users`).
+> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail extract`, `aimail revoke`, `aimail users`).
 
 ---
 
@@ -111,6 +111,19 @@ aimail send --from <my_id> --to <target_agent> --topic <action_name> -f /path/to
 
 # With an attachment tarball
 aimail send --from <my_id> --to <target_agent> --topic <action_name> -f spec.md -a payload.tar.xz
+```
+
+### 3. Revoke / Unsend a Sent Message
+If you sent a task in error or need to recall it before (or after) processing:
+```bash
+# Revoke your last sent message:
+aimail revoke --from <my_id>
+
+# Revoke a specific message by ID or topic:
+aimail revoke <message_id_or_topic>
+
+# Force revoke if the message was already marked read or replied:
+aimail revoke <message_id_or_topic> --force
 ```
 
 ---

@@ -253,6 +253,73 @@ def cmd_mark(args):
         )
 
 
+def cmd_revoke(args):
+    messages_dir = Path(args.dir).resolve()
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    target = args.target
+    sender = getattr(args, "sender", None)
+
+    msg_row = None
+    if not target or target.lower() == "last" or getattr(args, "last", False):
+        if sender:
+            cursor.execute("SELECT * FROM messages WHERE sender_id = ? ORDER BY id DESC LIMIT 1", (sender,))
+        else:
+            cursor.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 1")
+        msg_row = cursor.fetchone()
+    elif target.isdigit():
+        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
+        msg_row = cursor.fetchone()
+    else:
+        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
+        msg_row = cursor.fetchone()
+
+    if not msg_row:
+        ident_str = f" from sender '{sender}'" if sender else ""
+        print(f"Error: No message found to revoke{ident_str}.", file=sys.stderr)
+        conn.close()
+        sys.exit(1)
+
+    # Check status
+    if msg_row["status"] in ("read", "replied") and not getattr(args, "force", False):
+        print(
+            f"Notice: Message #{msg_row['id']} ('{msg_row['topic']}') has already been marked as '{msg_row['status']}' by '{msg_row['receiver_id']}'.\n"
+            f"Pass --force to permanently revoke and delete it anyway.",
+            file=sys.stderr
+        )
+        conn.close()
+        sys.exit(1)
+
+    # Delete markdown file
+    md_file = messages_dir / msg_row["md_file_path"]
+    if not md_file.exists():
+        md_file = messages_dir / MARKDOWN_SUBDIR / Path(msg_row["md_file_path"]).name
+    if md_file.exists():
+        try:
+            md_file.unlink()
+        except OSError as e:
+            print(f"Warning: Failed to delete markdown file: {e}", file=sys.stderr)
+
+    # Delete attachment file if present
+    if msg_row["attachment_path"]:
+        att_file = messages_dir / msg_row["attachment_path"]
+        if not att_file.exists():
+            att_file = messages_dir / ATTACHMENTS_SUBDIR / Path(msg_row["attachment_path"]).name
+        if att_file.exists():
+            try:
+                att_file.unlink()
+            except OSError as e:
+                print(f"Warning: Failed to delete attachment file: {e}", file=sys.stderr)
+
+    # Delete record from database
+    cursor.execute("DELETE FROM messages WHERE id = ?", (msg_row["id"],))
+    conn.commit()
+    conn.close()
+
+    print(f"✓ Revoked message #{msg_row['id']} ('{msg_row['topic']}') from '{msg_row['sender_id']}' to '{msg_row['receiver_id']}'. Deleted from inbox.")
+
+
 def cmd_show(args):
     messages_dir = Path(args.dir).resolve()
     cmd_sync(args)
@@ -685,6 +752,13 @@ def main():
     p_ext.add_argument("target", help="Message ID or filename")
     p_ext.add_argument("--out", "-o", default=".", help="Output directory to extract/copy into (default: current directory)")
 
+    # revoke
+    p_revoke = subparsers.add_parser("revoke", help="Revoke/unsend a sent message and delete its files from the recipient inbox")
+    p_revoke.add_argument("target", nargs="?", default="last", help="Message ID, topic substring, filename, or 'last' (default: last)")
+    p_revoke.add_argument("--from", dest="sender", help="Sender ID (to revoke the last message sent by this specific user)")
+    p_revoke.add_argument("--last", action="store_true", help="Revoke the last sent message")
+    p_revoke.add_argument("--force", "-f", action="store_true", help="Force revoke even if the message was already marked as read or replied")
+
     # user
     p_user = subparsers.add_parser("user", help="Manage and discover agent users in the directory")
     p_user_sub = p_user.add_subparsers(dest="user_action", required=True)
@@ -728,6 +802,8 @@ def main():
         cmd_reply(args)
     elif args.command == "extract":
         cmd_extract(args)
+    elif args.command == "revoke":
+        cmd_revoke(args)
     elif args.command == "user":
         cmd_user(args)
     elif args.command == "users":
