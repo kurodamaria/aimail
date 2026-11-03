@@ -51,7 +51,7 @@ def init_db(db_path: Path):
                 message_timestamp TEXT NOT NULL,
                 md_file_path TEXT NOT NULL UNIQUE,
                 attachment_path TEXT,
-                status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new', 'processing', 'read', 'replied', 'failed')),
+                status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new', 'processing', 'read', 'replied', 'closed', 'failed')),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -61,10 +61,10 @@ def init_db(db_path: Path):
             ON messages(receiver_id, status, message_timestamp);
         """)
 
-        # Migration: Ensure messages table allows new statuses ('processing', 'failed')
+        # Migration: Ensure messages table allows new statuses ('processing', 'closed', 'failed')
         cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'")
         table_sql = cursor.fetchone()
-        if table_sql and "processing" not in table_sql[0]:
+        if table_sql and ("closed" not in table_sql[0] or "processing" not in table_sql[0]):
             cursor.execute("PRAGMA foreign_keys = OFF;")
             cursor.execute("""
                 CREATE TABLE messages_migration (
@@ -75,7 +75,7 @@ def init_db(db_path: Path):
                     message_timestamp TEXT NOT NULL,
                     md_file_path TEXT NOT NULL UNIQUE,
                     attachment_path TEXT,
-                    status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new', 'processing', 'read', 'replied', 'failed')),
+                    status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new', 'processing', 'read', 'replied', 'closed', 'failed')),
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
@@ -272,7 +272,11 @@ def cmd_mark(args):
     """, (new_status, msg_row["id"]))
     conn.commit()
     conn.close()
-    print(f"Message '{target}' marked as '{new_status}'.")
+
+    if new_status == "closed":
+        print(f"✓ Message #{msg_row['id']} ('{msg_row['topic']}') marked as 'closed'. Thread terminated without wakeup.")
+    else:
+        print(f"Message '{target}' marked as '{new_status}'.")
 
     # If marked as replied, wake up the original sender
     if new_status == "replied" and not getattr(args, "no_wakeup", False):
@@ -283,6 +287,13 @@ def cmd_mark(args):
             file_path=msg_row["md_file_path"],
             messages_dir=messages_dir
         )
+
+
+def cmd_close(args):
+    """Mark a message thread as 'closed' silently without triggering any wakeups (breaks reply loops)."""
+    args.status = "closed"
+    args.no_wakeup = True
+    cmd_mark(args)
 
 
 def cmd_revoke(args):
@@ -314,7 +325,7 @@ def cmd_revoke(args):
         sys.exit(1)
 
     # Check status
-    if msg_row["status"] in ("processing", "read", "replied") and not getattr(args, "force", False):
+    if msg_row["status"] in ("processing", "read", "replied", "closed") and not getattr(args, "force", False):
         print(
             f"Notice: Message #{msg_row['id']} ('{msg_row['topic']}') has already reached status '{msg_row['status']}' (assigned to '{msg_row['receiver_id']}').\n"
             f"Pass --force to permanently revoke and delete it anyway.",
@@ -742,14 +753,18 @@ def main():
     p_list = subparsers.add_parser("list", help="List messages")
     p_list.add_argument("--to", help="Filter by receiver ID (e.g. oschan)")
     p_list.add_argument("--sender", help="Filter by sender ID")
-    p_list.add_argument("--status", choices=["new", "processing", "read", "replied", "failed", "all"], default="all", help="Filter by status (default: all)")
+    p_list.add_argument("--status", choices=["new", "processing", "read", "replied", "closed", "failed", "all"], default="all", help="Filter by status (default: all)")
     p_list.add_argument("--limit", type=int, default=20, help="Max records to return")
 
     # mark
     p_mark = subparsers.add_parser("mark", help="Update message status")
     p_mark.add_argument("target", help="Message ID or filename")
-    p_mark.add_argument("--status", choices=["new", "processing", "read", "replied", "failed"], required=True, help="New status")
+    p_mark.add_argument("--status", choices=["new", "processing", "read", "replied", "closed", "failed"], required=True, help="New status")
     p_mark.add_argument("--no-wakeup", action="store_true", help="Skip triggering sender's wakeup on reply")
+
+    # close
+    p_close = subparsers.add_parser("close", help="Mark a message thread as 'closed' without triggering any wakeup (prevents reply loops)")
+    p_close.add_argument("target", help="Message ID or filename to close")
 
     # reply
     p_reply = subparsers.add_parser("reply", help="Reply to a message, automatically marking original as replied and waking sender")
@@ -839,6 +854,8 @@ def main():
         cmd_reply(args)
     elif args.command == "extract":
         cmd_extract(args)
+    elif args.command == "close":
+        cmd_close(args)
     elif args.command == "revoke":
         cmd_revoke(args)
     elif args.command == "user":

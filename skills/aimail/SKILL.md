@@ -16,7 +16,7 @@ description: >-
 > - **DO NOT** inspect, browse, locate, or run `ls` on internal system directories or mailbox files.
 > - **DO NOT** read, audit, or edit internal database files or implementation scripts.
 > - Treat `aimail` strictly as an opaque black-box command-line tool (like `git` or `curl`).
-> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail extract`, `aimail revoke`, `aimail users`).
+> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail close`, `aimail extract`, `aimail revoke`, `aimail users`).
 
 ---
 
@@ -91,6 +91,14 @@ aimail reply <message_id_or_topic> -f results.md -a output.tar.xz --erase-origin
 ```
 *(Alternatively, running `aimail mark <id> --status replied` will also automatically notify and wake up the original sender).*
 
+### 5. Terminate Finished Threads Silently (`aimail close`)
+To **prevent infinite conversational ping-pong loops** (e.g. repeated "thanks" / "acknowledged" wakeups) or when an incoming message is purely informational and needs no response:
+**DO NOT send a courtesy reply.** Instead, simply close the thread:
+```bash
+# Silently marks the message as 'closed' with ZERO wakeups:
+aimail close <message_id_or_topic>
+```
+
 ---
 
 ## 📤 Delegating Tasks to Another Agent
@@ -133,4 +141,4 @@ aimail revoke <message_id_or_topic> --force
 
 1. **Decoupled Architecture:** Never attempt to inspect or modify another agent's private workspace or directory directly. Exchange information strictly via `aimail` CLI commands and attachments.
 2. **Black-Box Encapsulation:** Treat `aimail` as a closed-source system binary in `$PATH`. Do not explore the installation folder or inspect source code.
-3. **Status Transitions:** Always keep message statuses updated (`new` → `processing` → `replied` [or `failed`]) so senders and operator `kuro` have full real-time visibility into who is actively working on what.
+3. **Status Transitions:** Always keep message statuses updated (`new` → `processing` → `replied`, or `closed`) so senders and operator `kuro` have full real-time visibility into who is actively working on what.

@@ -63,8 +63,8 @@ CREATE TABLE messages (
     message_timestamp TEXT NOT NULL,
     md_file_path TEXT NOT NULL UNIQUE,     -- e.g. "markdown/<filename>.md"
     attachment_path TEXT,                  -- e.g. "attachments/<filename>.tar.xz"
-    status TEXT NOT NULL DEFAULT 'new'     -- 'new' | 'processing' | 'read' | 'replied' | 'failed'
-        CHECK(status IN ('new', 'processing', 'read', 'replied', 'failed')),
+    status TEXT NOT NULL DEFAULT 'new'     -- 'new' | 'processing' | 'read' | 'replied' | 'closed' | 'failed'
+        CHECK(status IN ('new', 'processing', 'read', 'replied', 'closed', 'failed')),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -91,12 +91,15 @@ CREATE TABLE users (
    ┌─────────┐      agent wakes up      ┌──────────────┐     agent completes task     ┌─────────────┐
    │   new   │  ─────────────────────>  │  processing  │  ─────────────────────────>  │   replied   │
    └─────────┘                          └──────────────┘                              └─────────────┘
-                                                │
-                                                │ unrecoverable error
-                                                ▼
-                                        ┌──────────────┐
-                                        │    failed    │
-                                        └──────────────┘
+        │                                       │                                            │
+        │                                       │ unrecoverable error                        │ thread resolved
+        │                                       ▼                                            ▼
+        │                               ┌──────────────┐                             ┌─────────────┐
+        │                               │    failed    │                             │   closed    │
+        │                               └──────────────┘                             └─────────────┘
+        │                                                                                    ▲
+        │                                                                                    │
+        └─────────────────────────── informational / no-reply ───────────────────────────────┘
 ```
 
 ---
@@ -197,7 +200,19 @@ aimail reply audit_task -f report.md -a logs.tar.xz --erase-original
 
 ---
 
-### 5. Extracting Attachments
+### 5. Closing Threads Silently (`aimail close`)
+
+To **prevent infinite conversational ping-pong loops** (e.g. repeated "thanks" / "acknowledged" wakeups) or when an incoming task is completed/informational and needs no further response:
+
+```bash
+# Silently marks the message as 'closed' with zero wakeups:
+aimail close 1
+aimail close train_weights
+```
+
+---
+
+### 6. Extracting Attachments
 
 When a message contains a binary archive or dataset payload, unpack it directly into your project workspace without touching internal mailbox paths:
 
@@ -208,7 +223,7 @@ aimail extract 1 --out ./build_inputs
 
 ---
 
-### 6. Revoking / Unsending Messages
+### 7. Revoking / Unsending Messages
 
 If a message was sent in error or needs to be recalled before or after processing:
 
@@ -230,11 +245,14 @@ aimail revoke 10 --force
 
 ---
 
-### 7. Updating Message Status Manually
+### 8. Updating Message Status Manually
 
 ```bash
 # Mark as processing (actively working on the task)
 aimail mark 1 --status processing
+
+# Mark as closed (silently terminate thread without waking anyone)
+aimail mark 1 --status closed
 
 # Mark as read
 aimail mark 1 --status read
@@ -248,7 +266,7 @@ aimail mark 1 --status failed
 
 ---
 
-### 8. Manual Sync / Reconciliation
+### 9. Manual Sync / Reconciliation
 
 If messages were manually copied, dropped, or modified on disk:
 ```bash
@@ -258,7 +276,7 @@ aimail sync
 
 ---
 
-### 9. Agent Directory & Discovery
+### 10. Agent Directory & Discovery
 
 `aimail` includes an agent capability registry so agents and operators know who is available and what they can do:
 
@@ -287,7 +305,7 @@ aimail user register --id bot --client custom --desc "Custom runner" --keywords 
 
 ---
 
-### 10. Automatic Wakeup / Notifications
+### 11. Automatic Wakeup / Notifications
 
 When a message is sent via `aimail send`, the recipient's wakeup handler is triggered automatically in a detached background process:
 
