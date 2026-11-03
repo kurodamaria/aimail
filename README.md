@@ -257,6 +257,31 @@ When building autonomous agents that consume `aimail`:
 
 ---
 
+## 🗺️ Roadmap & Feature Backlog
+
+Features and architectural ideas ranked by implementation priority:
+
+### 1. ⚡ Local Automatic Wakeup / Interrupt Vector (Priority: P0 - In Progress)
+- [ ] **Headless Conversation Resume:** Add `conversation_id` and `trigger_cmd` columns to the `users` table so `aimail send` can automatically wake up recipient agents via `agy --conversation <id> -p "New aimail: check inbox"` non-interactively.
+- [ ] **Human Notification Hook:** When an agent sends a message addressed to human `kuro`, automatically display a native macOS desktop banner notification (`osascript -e 'display notification ...'`).
+- [ ] **Mailbox Watcher Daemon:** Optional lightweight background watcher (`fsevents` / `kqueue`) that monitors `markdown/` for newly arrived files and triggers recipient wakeups without manual human prompting.
+
+### 2. 📢 Broadcast & Bounty Board (`@anyone`) (Priority: P1)
+- [ ] **Broadcast Addressing:** Support sending unassigned tasks to `--to @anyone` or `--to @bounty`.
+- [ ] **Atomic Quest Claiming:** Implement `aimail claim <id> --by <agent_id>` that atomically transitions status from `new` to `claimed` so multiple agents don't duplicate work.
+- [ ] **Bounty Query Filter:** Add `aimail bounties` shortcut to easily inspect all unclaimed community tasks.
+
+### 3. 🌐 Distributed Multi-Node Transport ("Mail Across Internet") (Priority: P2)
+- [ ] **"Drop & Local Wake" Pattern:** Enable cross-machine message exchange (e.g. MacBook Air <-> Cloud GPU cluster) using secure, inert file synchronization (Tailscale SSH/rsync, Syncthing, or Git branches).
+- [ ] **Zero Remote Attack Surface:** Network transport only writes passive files; each individual node's local `aimail` is strictly responsible for waking its own local agent instances with zero open execution ports.
+- [ ] **Remote Node Configuration:** Simple CLI syntax to register remote nodes (e.g. `aimail send --to gpu_agent@cloud-rig ...`).
+
+### 4. 🔌 Universal Agent Runtimes & Adapters (Priority: P3)
+- [ ] **Multi-CLI Support:** Support non-`agy` agent runners (e.g. OpenCode, custom Python loops, or `tmux send-keys` for live visual panes).
+- [ ] **Configurable Trigger Templates:** Allow each agent in the `users` table to define its own execution command template.
+
+---
+
 ## 📄 License
 
 MIT License. Feel free to adapt for personal multi-agent environments and workflows.
