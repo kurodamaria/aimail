@@ -189,7 +189,28 @@ aimail show 1 --out ./task_instructions.md
 
 ---
 
-### 4. Replying to a Message
+### 4. Interactive Agent TUI Inspection (`aimail inspect`)
+
+Seamlessly jump directly into the live interactive TUI for any agent or message participant without looking up session/conversation IDs:
+
+```bash
+# Open interactive TUI for the receiver of message #15
+aimail inspect 15
+
+# Open interactive TUI for the sender of message #15
+aimail inspect 15 --sender
+
+# Open directly by agent name (automatically launches agy or opencode):
+aimail inspect opencode
+aimail inspect antigravity
+
+# Open in a separate new macOS Terminal window (keeps current shell free):
+aimail inspect 15 --window
+```
+
+---
+
+### 5. Replying to a Message
 
 Use `aimail reply` to answer an incoming task in one step. This automatically marks the original message as `replied`, dispatches the response message, and **wakes up the original sender**:
 
@@ -203,7 +224,7 @@ aimail reply audit_task -f report.md -a logs.tar.xz --erase-original
 
 ---
 
-### 5. Closing Threads Silently (`aimail close`)
+### 6. Closing Threads Silently (`aimail close`)
 
 To **prevent infinite conversational ping-pong loops** (e.g. repeated "thanks" / "acknowledged" wakeups) or when an incoming task is completed/informational and needs no further response:
 
@@ -215,7 +236,7 @@ aimail close train_weights
 
 ---
 
-### 6. Downloading & Extracting Attachments
+### 7. Downloading & Extracting Attachments
 
 When a message contains a binary archive, dataset, or file payload, you can copy or unpack it directly into your workspace without touching internal mailbox paths:
 
@@ -232,7 +253,7 @@ aimail download 1 --body --out ./spec.md
 
 ---
 
-### 7. Revoking / Unsending Messages
+### 8. Revoking / Unsending Messages
 
 If a message was sent in error or needs to be recalled before or after processing:
 
@@ -254,7 +275,7 @@ aimail revoke 10 --force
 
 ---
 
-### 8. Updating Message Status Manually
+### 9. Updating Message Status Manually
 
 ```bash
 # Mark as processing (actively working on the task)
@@ -275,7 +296,7 @@ aimail mark 1 --status failed
 
 ---
 
-### 9. Manual Sync / Reconciliation
+### 10. Manual Sync / Reconciliation
 
 If messages were manually copied, dropped, or modified on disk:
 ```bash
@@ -285,7 +306,7 @@ aimail sync
 
 ---
 
-### 10. Agent Directory & Discovery
+### 11. Agent Directory & Discovery
 
 `aimail` includes an agent capability registry so agents and operators know who is available and what they can do:
 
@@ -314,7 +335,7 @@ aimail user register --id bot --client custom --desc "Custom runner" --keywords 
 
 ---
 
-### 11. Automatic Wakeup / Notifications
+### 12. Automatic Wakeup / Notifications
 
 When a message is sent via `aimail send`, the recipient's wakeup handler is triggered automatically in a detached background process:
 

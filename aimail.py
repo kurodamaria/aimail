@@ -723,6 +723,90 @@ def cmd_download(args):
     print(f"✓ Downloaded attachment '{archive_path.name}' to: {dest_file}")
 
 
+def cmd_inspect(args):
+    """Open interactive TUI for an agent or message participant (agy or opencode)."""
+    messages_dir = Path(args.dir).resolve()
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    target = args.target
+    user_id = None
+
+    # Check if target is a message ID or keyword
+    if not target or target.lower() == "last":
+        cursor.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        if not row:
+            print("Error: No messages found in database.", file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+        user_id = row["sender_id"] if args.sender else row["receiver_id"]
+    elif target.isdigit():
+        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
+        row = cursor.fetchone()
+        if not row:
+            print(f"Error: Message #{target} not found.", file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+        user_id = row["sender_id"] if args.sender else row["receiver_id"]
+    else:
+        # Check if target is a registered user ID
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (target,))
+        u_row = cursor.fetchone()
+        if u_row:
+            user_id = u_row["user_id"]
+        else:
+            # Check if target is a message topic substring
+            cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ? ORDER BY id DESC LIMIT 1", (target, f"%{target}%"))
+            row = cursor.fetchone()
+            if row:
+                user_id = row["sender_id"] if args.sender else row["receiver_id"]
+            else:
+                user_id = target
+
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    user_row = cursor.fetchone()
+    conn.close()
+
+    if not user_row:
+        print(f"Error: User '{user_id}' is not registered in aimail directory.", file=sys.stderr)
+        sys.exit(1)
+
+    client_type = (user_row["client_type"] or "agy").lower()
+    conv_id = user_row["conversation_id"]
+
+    if not conv_id:
+        print(f"Error: User '{user_id}' does not have a registered conversation_id. Run 'aimail user register' to set one.", file=sys.stderr)
+        sys.exit(1)
+
+    if client_type == "agy":
+        cmd_args = ["agy", f"--conversation={conv_id}"]
+        display_cmd = f"agy --conversation={conv_id}"
+    elif client_type == "opencode":
+        session_id = conv_id if conv_id.startswith("ses") else f"ses_{conv_id}"
+        cmd_args = ["opencode", "-s", session_id]
+        display_cmd = f"opencode -s {session_id}"
+    else:
+        print(f"Error: Client type '{client_type}' does not support interactive TUI inspection.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Opening {client_type} session for agent '{user_id}' ({conv_id})...")
+
+    if getattr(args, "window", False):
+        apple_script = f'tell application "Terminal" to do script "{display_cmd}"'
+        try:
+            subprocess.run(["osascript", "-e", apple_script], check=True)
+            print(f"✓ Launched {client_type} in a new Terminal window.")
+        except Exception as e:
+            print(f"Notice: Failed to spawn new window ({e}), launching in current terminal instead...", file=sys.stderr)
+            subprocess.run(cmd_args)
+    else:
+        try:
+            subprocess.run(cmd_args)
+        except KeyboardInterrupt:
+            pass
+
+
 def cmd_user(args):
     messages_dir = Path(args.dir).resolve()
     conn = get_connection(messages_dir)
@@ -878,6 +962,14 @@ def main():
     p_send.add_argument("--timestamp", help="Custom timestamp (default: current local timestamp YYYYMMDD_HHMMSS)")
     p_send.add_argument("--no-wakeup", action="store_true", help="Skip triggering recipient's automatic wakeup command")
 
+    # inspect
+    p_ins = subparsers.add_parser("inspect", help="Open the interactive TUI for an agent or message participant (agy or opencode)")
+    p_ins.add_argument("target", nargs="?", default="last", help="Message ID, topic substring, agent ID, or 'last' (default: last)")
+    role_group = p_ins.add_mutually_exclusive_group()
+    role_group.add_argument("--sender", "-s", action="store_true", help="Inspect the sender of the message")
+    role_group.add_argument("--receiver", "-r", action="store_true", help="Inspect the receiver of the message (default)")
+    p_ins.add_argument("--window", "-w", action="store_true", help="Open TUI in a new macOS Terminal window rather than in-place")
+
     # download
     p_dl = subparsers.add_parser("download", help="Download (copy) attachment or markdown body directly into your workspace")
     p_dl.add_argument("target", help="Message ID or topic/filename")
@@ -934,6 +1026,8 @@ def main():
         cmd_mark(args)
     elif args.command == "show":
         cmd_show(args)
+    elif args.command == "inspect":
+        cmd_inspect(args)
     elif args.command == "send":
         cmd_send(args)
     elif args.command == "reply":

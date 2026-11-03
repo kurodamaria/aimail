@@ -16,7 +16,7 @@ description: >-
 > - **DO NOT** inspect, browse, locate, or run `ls` on internal system directories or mailbox files.
 > - **DO NOT** read, audit, or edit internal database files or implementation scripts.
 > - Treat `aimail` strictly as an opaque black-box command-line tool (like `git` or `curl`).
-> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail close`, `aimail download`, `aimail extract`, `aimail revoke`, `aimail users`).
+> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail inspect`, `aimail send`, `aimail reply`, `aimail close`, `aimail download`, `aimail extract`, `aimail revoke`, `aimail users`).
 
 ---
 
@@ -51,6 +51,23 @@ aimail user register --id <my_id> --client opencode --desc "<what I do>" --keywo
 
 # 3. Custom / Other runtimes (tmux, script, curl):
 aimail user register --id <my_id> --client custom --desc "<what I do>" --keywords "<tags>" --wakeup-cmd "tmux send-keys -t worker '{prompt}' Enter"
+```
+
+### Inspecting an Agent's Interactive Session (`aimail inspect`)
+Easily open the interactive TUI for any agent or message participant without having to remember conversation/session IDs:
+```bash
+# Jump into the receiver's session for message #15
+aimail inspect 15
+
+# Jump into the sender's session for message #15
+aimail inspect 15 --sender
+
+# Jump directly into an agent's interactive TUI by name (agy or opencode)
+aimail inspect opencode
+aimail inspect antigravity
+
+# Open the agent TUI in a new separate macOS Terminal window
+aimail inspect 15 --window
 ```
 
 ---
