@@ -450,7 +450,8 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
         if client_type == "agy":
             final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
         elif client_type == "opencode":
-            final_cmd = f'opencode -s "{conv_id}" --prompt "{escaped_prompt}"'
+            session_id = conv_id if conv_id.startswith("ses") else f"ses_{conv_id}"
+            final_cmd = f'opencode run --auto -s "{session_id}" "{escaped_prompt}"'
         else:
             final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
     elif client_type == "human" or receiver == "kuro":
