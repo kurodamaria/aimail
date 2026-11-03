@@ -319,6 +319,16 @@ Features and architectural ideas ranked by implementation priority:
   - Inquires whether the files are still needed or can be safely discarded.
   - Once participants agree (or human operator `kuro` confirms), the `.md` content and `.tar.xz` binary attachments are permanently purged to free up disk space.
 
+### 6. 🛡️ Resilience, Failure Handling & Dead-Letter Recovery (Priority: P1)
+- [ ] **Wakeup Process Monitoring:** Capture exit codes and stderr of spawned wakeup processes instead of blind background detachment; record delivery failures in an audit log.
+- [ ] **Dead-Letter State (`status = 'failed'`):** Expand SQLite message status to include `failed` and `undelivered` states when recipient execution crashes.
+- [ ] **Runtime Error Recovery (Rate Limits, Quota, Network):** Handle downstream CLI failures when `agy` or `opencode` cannot reach the model:
+  - Automatic retry with exponential backoff for transient issues (e.g. HTTP 429 rate limits, network blips).
+  - Terminal failure marking when out of credits, invalid auth, or corrupted session.
+- [ ] **Human Escalation Alarm:** When a critical task fails or an agent crashes, automatically escalate to human operator `kuro` via desktop banner or smartphone alert:
+  - *"⚠️ Task #24 to 'coder' failed: Model quota exceeded. Human intervention required."*
+- [ ] **Diagnostic & Recovery CLI:** Add `aimail doctor` (verifies agent conversation IDs and binaries) and `aimail retry <id>` to re-trigger failed message dispatches.
+
 ---
 
 ## 📄 License
