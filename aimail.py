@@ -542,7 +542,12 @@ def cmd_reply(args):
     # Set up parameters for cmd_send
     args.sender = getattr(args, "sender", None) or original_receiver
     args.receiver = original_sender
-    args.topic = f"{original_topic}_reply"
+    if getattr(args, "topic", None):
+        args.topic = args.topic
+    elif original_topic.endswith("_reply"):
+        args.topic = original_topic
+    else:
+        args.topic = f"{original_topic}_reply"
     args.timestamp = getattr(args, "timestamp", None)
 
     cmd_send(args)
