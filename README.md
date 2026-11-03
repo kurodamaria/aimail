@@ -1,0 +1,218 @@
+# aimail (曖昧 / AI-Mail)
+
+> **A lightweight, local-first asynchronous messaging bus and task queue for autonomous AI agents and human operators.**
+
+`aimail` provides a simple, robust, and completely serverless protocol for agents and humans to exchange structured tasks, status updates, and binary payloads across processes.
+
+It pairs the transparency of human-readable Markdown files with the fast querying and atomic status tracking of an SQLite database.
+
+---
+
+## 💡 Why aimail?
+
+Traditional inter-process or multi-agent communication architectures often rely on heavy infrastructure (Redis, RabbitMQ, HTTP servers) or ephemeral stdout pipes that vanish when a session ends.
+
+`aimail` takes a **local-first, filesystem-native approach**:
+
+- 📂 **Transparent & Inspectable:** Message contents are standard `.md` files in a folder. You can read, write, or inspect them directly in Finder, VS Code, Obsidian, or terminal.
+- ⚡ **Zero-Daemon Overhead:** No running background server required. State is persisted in an embedded SQLite database (`aimail.db`).
+- 🤖 **Multi-Agent Decoupled:** Senders simply drop messages with target receiver IDs. Agents process their inboxes asynchronously on demand.
+- 📦 **Attachment Ready:** Direct support for paired binary archives (`.tar.xz`), code diffs, or artifacts alongside message instructions.
+- 🔄 **Self-Healing Sync:** If a sender manually drops a file into the directory without using the CLI, `aimail sync` auto-discovers and registers it automatically.
+
+---
+
+## 📁 Directory Architecture
+
+```text
+Desktop/aimail/
+├── markdown/        # Markdown message files (.md)
+├── attachments/     # Binary payload archives (.tar.xz, datasets, etc.)
+├── aimail.db        # SQLite message registry & state index (git-ignored)
+├── msgctl.py        # Core CLI & Python API engine
+└── README.md
+```
+
+### Naming Convention
+
+Every message follows a deterministic naming convention:
+
+```text
+[sender-id]-[receiver-id]-[topic]-[timestamp].md
+[sender-id]-[receiver-id]-[topic]-[timestamp].tar.xz   (optional attachment)
+```
+
+- **`sender-id`**: ID of the issuing human or agent (e.g. `kuro`, `researcher`, `orchestrator`).
+- **`receiver-id`**: ID of the target recipient (e.g. `oschan`, `coder`, `reviewer`).
+- **`topic`**: Purpose or action descriptor (e.g. `daily_sync`, `bugfix_task`, `deploy`).
+- **`timestamp`**: Sorting timestamp formatted as `YYYYMMDD_HHMMSS`.
+
+---
+
+## 🗄️ Database Schema
+
+The local SQLite registry (`aimail.db`) indexes and tracks message states:
+
+```sql
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id TEXT NOT NULL,
+    receiver_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    message_timestamp TEXT NOT NULL,
+    md_file_path TEXT NOT NULL UNIQUE,     -- e.g. "markdown/<filename>.md"
+    attachment_path TEXT,                  -- e.g. "attachments/<filename>.tar.xz"
+    status TEXT NOT NULL DEFAULT 'new'     -- 'new' | 'read' | 'replied'
+        CHECK(status IN ('new', 'read', 'replied')),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_messages_inbox 
+ON messages(receiver_id, status, message_timestamp);
+```
+
+### State Machine
+
+```
+   ┌─────────┐       agent reads       ┌──────────┐      agent responds      ┌─────────────┐
+   │   new   │  ────────────────────>  │   read   │  ─────────────────────>  │   replied   │
+   └─────────┘                         └──────────┘                          └─────────────┘
+```
+
+---
+
+## 🚀 Installation & Setup
+
+`aimail` requires **Python 3.9+** and has **zero third-party dependencies** (uses only standard library modules `sqlite3`, `argparse`, `pathlib`, `shutil`).
+
+To make `aimail` callable system-wide from any terminal directory:
+
+```bash
+# Clone or move to your desired workspace
+cd ~/Desktop/aimail
+
+# Make executable and symlink to your local bin
+chmod +x msgctl.py
+mkdir -p ~/.local/bin
+ln -sf ~/Desktop/aimail/msgctl.py ~/.local/bin/aimail
+ln -sf ~/Desktop/aimail/msgctl.py ~/.local/bin/msgctl
+```
+
+---
+
+## 💻 CLI Usage Guide
+
+Both `aimail` and `msgctl` can be used interchangeably.
+
+### 1. Sending Messages
+
+#### Quick Inline String
+Send a message directly from the command line:
+```bash
+aimail send --from kuro --to oschan --topic build_status -c "Alphaforge build passed all tests."
+```
+
+#### Markdown File
+Copy an existing markdown file into the inbox:
+```bash
+aimail send --from architect --to oschan --topic sprint_plan -f ~/Documents/plan.md
+```
+
+#### With Attachment & Original Erase
+Attach a project tarball and erase the source file after sending to prevent duplicate files:
+```bash
+aimail send \
+  --from researcher \
+  --to oschan \
+  --topic train_weights \
+  -f task.md \
+  --attach checkpoints.tar.xz \
+  --erase-original
+```
+
+---
+
+### 2. Checking & Listing Messages
+
+```bash
+# View all unread messages for agent 'oschan'
+aimail list --to oschan --status new
+
+# View recent messages from a specific sender
+aimail list --sender kuro --limit 10
+
+# View all messages across all states
+aimail list --status all
+```
+
+**Example Output:**
+```text
+ID   STATUS   SENDER       RECEIVER     TOPIC            TIMESTAMP          ATTACHMENT   FILE
+-----------------------------------------------------------------------------------------------------------------
+1    new      kuro         oschan       build_status     20261103_183045    -            markdown/kuro-oschan-build_status-20261103_183045.md
+2    new      researcher   oschan       train_weights    20261103_183432    yes          markdown/researcher-oschan-train_weights-20261103_183432.md
+```
+
+---
+
+### 3. Reading / Inspecting a Message
+
+Inspect full metadata and preview the Markdown content:
+```bash
+aimail show 1
+# Or fuzzy-search by topic/name:
+aimail show train_weights
+```
+
+---
+
+### 4. Updating Message Status
+
+```bash
+# Mark as read
+aimail mark 1 --status read
+
+# Mark as replied
+aimail mark 1 --status replied
+```
+
+---
+
+### 5. Manual Sync / Reconciliation
+
+If messages were manually copied, dropped, or modified on disk:
+```bash
+aimail sync
+```
+*Note: `list` and `show` automatically trigger `sync` beforehand, so your query results are always fresh.*
+
+---
+
+## 🤖 Agent Protocol Pattern (e.g. `oschan`)
+
+When building autonomous agents that consume `aimail`:
+
+1. **Check for Tasks:**
+   ```bash
+   aimail list --to <agent_id> --status new
+   ```
+2. **Read Content:**
+   ```bash
+   aimail show <message_id>
+   ```
+3. **Execute Actions:** Agent parses Markdown instructions and any extracted archive in `attachments/`.
+4. **Update Status / Reply:**
+   ```bash
+   # Mark current task done
+   aimail mark <message_id> --status replied
+
+   # Send reply back to original sender
+   aimail send --from <agent_id> --to <sender_id> --topic <topic>_reply -c "Task completed. Output saved."
+   ```
+
+---
+
+## 📄 License
+
+MIT License. Feel free to adapt for personal multi-agent environments and workflows.
