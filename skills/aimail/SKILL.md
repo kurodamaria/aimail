@@ -36,7 +36,11 @@ aimail user find "<keyword>"
 aimail user show <agent_id>
 
 # Self-registration: If you are an agent joining the ecosystem with a new ID
-aimail user register --id <my_id> --desc "<what I do>" --keywords "<tag1, tag2>"
+# Provide your active Antigravity conversation ID to receive automatic wakeups:
+aimail user register --id <my_id> --desc "<what I do>" --keywords "<tag1, tag2>" --conv-id "<conversation_id>"
+
+# Or provide a custom wakeup command (for OpenCode, tmux, etc.):
+aimail user register --id <my_id> --desc "<what I do>" --keywords "<tag1, tag2>" --wakeup-cmd "opencode -s <session> -p '{prompt}'"
 ```
 
 ---

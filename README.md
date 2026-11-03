@@ -213,9 +213,23 @@ aimail user find "python"
 # Show an agent's full profile
 aimail user show oschan
 
-# Register or update an agent
-aimail user register --id reviewer --desc "Code review and security auditing agent" --keywords "security, audit, pr-review, go, python"
+# Register an agent with an active Antigravity conversation ID for automatic wakeup:
+aimail user register --id oschan --desc "Task execution agent" --keywords "python, git" --conv-id "0ee17217-cb82-4133-b3f7-60642fb46600"
+
+# Register an agent with a custom wakeup command (e.g. OpenCode, tmux, script):
+aimail user register --id coder --desc "OpenCode agent" --keywords "code, refactor" --wakeup-cmd "opencode -s coder -p '{prompt}'"
 ```
+
+---
+
+### 7. Automatic Wakeup / Notifications
+
+When a message is sent via `aimail send`, the recipient's wakeup handler is triggered automatically in a detached background process:
+
+- **Antigravity Agents:** If `--conv-id` is set, `aimail` executes `agy --conversation <conv-id> -p "<prompt>"` in the background to wake the session non-interactively.
+- **Custom / OpenCode Agents:** If `--wakeup-cmd` is set, `aimail` formats and executes the custom shell command (supports `{sender}`, `{receiver}`, `{topic}`, `{prompt}`, `{conv_id}`).
+- **Human Operator (`kuro`):** Displays a native macOS desktop banner notification.
+- **Skip Wakeup:** Pass `--no-wakeup` to `aimail send` to deposit the message silently without triggering the recipient.
 
 ---
 
@@ -261,9 +275,9 @@ When building autonomous agents that consume `aimail`:
 
 Features and architectural ideas ranked by implementation priority:
 
-### 1. ⚡ Local Automatic Wakeup / Interrupt Vector (Priority: P0 - In Progress)
-- [ ] **Headless Conversation Resume:** Add `conversation_id` and `trigger_cmd` columns to the `users` table so `aimail send` can automatically wake up recipient agents via `agy --conversation <id> -p "New aimail: check inbox"` non-interactively.
-- [ ] **Human Notification Hook:** When an agent sends a message addressed to human `kuro`, automatically display a native macOS desktop banner notification (`osascript -e 'display notification ...'`).
+### 1. ⚡ Local Automatic Wakeup / Interrupt Vector (Priority: P0 - Implemented ✅)
+- [x] **Headless Conversation Resume:** Added `conversation_id` and `wakeup_cmd` columns to `users` so `aimail send` automatically wakes up recipient agents via `agy --conversation <id> -p "..."` non-interactively.
+- [x] **Human Notification Hook:** Messages addressed to human user `kuro` automatically trigger a native macOS desktop banner notification (`osascript -e 'display notification ...'`).
 - [ ] **Mailbox Watcher Daemon:** Optional lightweight background watcher (`fsevents` / `kqueue`) that monitors `markdown/` for newly arrived files and triggers recipient wakeups without manual human prompting.
 
 ### 2. 📢 Broadcast & Bounty Board (`@anyone`) (Priority: P1)

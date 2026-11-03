@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -64,19 +65,29 @@ def init_db(db_path: Path):
                 user_id TEXT PRIMARY KEY,
                 description TEXT NOT NULL,
                 keywords TEXT NOT NULL,
+                conversation_id TEXT,
+                wakeup_cmd TEXT,
                 registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        # Backward-compatible column migration
+        cursor.execute("PRAGMA table_info(users)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        if "conversation_id" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN conversation_id TEXT;")
+        if "wakeup_cmd" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN wakeup_cmd TEXT;")
+
         # Seed initial users if empty
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
             cursor.executemany("""
-                INSERT INTO users (user_id, description, keywords)
-                VALUES (?, ?, ?)
+                INSERT INTO users (user_id, description, keywords, conversation_id, wakeup_cmd)
+                VALUES (?, ?, ?, ?, ?)
             """, [
-                ("kuro", "Real human user, developer, and system owner.", "human, developer, owner, operator, feedback, decisions"),
-                ("oschan", "AI assistant and autonomous agent for background task execution, code review, and development.", "agent, python, coding, git, review, automation, testing")
+                ("kuro", "Real human user, developer, and system owner.", "human, developer, owner, operator, feedback, decisions", None, 'osascript -e \'display notification "{prompt}" with title "aimail: message from {sender}"\''),
+                ("oschan", "AI assistant and autonomous agent for background task execution, code review, and development.", "agent, python, coding, git, review, automation, testing", None, None)
             ])
         conn.commit()
 
@@ -274,6 +285,55 @@ def cmd_show(args):
         print(f"\nWarning: File {file_path} not found on disk.")
 
 
+def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messages_dir: Path):
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, conversation_id, wakeup_cmd FROM users WHERE user_id = ?", (receiver,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return
+
+    conv_id = row["conversation_id"]
+    wakeup_template = row["wakeup_cmd"]
+
+    prompt = f"New aimail received from {sender} on topic '{topic}'. Check inbox with 'aimail list --to {receiver} --status new' and 'aimail show {topic}'."
+
+    final_cmd = None
+    if wakeup_template:
+        try:
+            final_cmd = wakeup_template.format(
+                sender=sender,
+                receiver=receiver,
+                topic=topic,
+                file=file_path,
+                prompt=prompt,
+                conv_id=conv_id or ""
+            )
+        except (KeyError, IndexError):
+            final_cmd = wakeup_template
+    elif conv_id:
+        escaped_prompt = prompt.replace('"', '\\"')
+        final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
+    elif receiver == "kuro":
+        escaped_msg = f"New message from {sender} on '{topic}'".replace('"', '\\"')
+        final_cmd = f'osascript -e \'display notification "{escaped_msg}" with title "aimail"\''
+
+    if final_cmd:
+        try:
+            subprocess.Popen(
+                final_cmd,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            print(f"Triggered background wakeup for '{receiver}'.")
+        except Exception as e:
+            print(f"Warning: Failed to execute wakeup for '{receiver}': {e}", file=sys.stderr)
+
+
 def cmd_send(args):
     messages_dir = Path(args.dir).resolve()
     messages_dir.mkdir(parents=True, exist_ok=True)
@@ -342,6 +402,10 @@ def cmd_send(args):
     conn.close()
     print(f"Message registered in SQLite database with status 'new'.")
 
+    # Trigger background wakeup unless explicitly disabled
+    if not getattr(args, "no_wakeup", False):
+        trigger_wakeup(receiver, sender, topic, db_md_path, messages_dir)
+
     # Erase original files if requested
     if args.erase_original:
         if source_md:
@@ -369,14 +433,23 @@ def cmd_user(args):
         user_id = args.id.strip()
         desc = args.desc.strip()
         keywords = args.keywords.strip()
+        conv_id = getattr(args, "conv_id", None)
+        if conv_id:
+            conv_id = conv_id.strip()
+        wakeup_cmd = getattr(args, "wakeup_cmd", None)
+        if wakeup_cmd:
+            wakeup_cmd = wakeup_cmd.strip()
+
         cursor.execute("""
-            INSERT INTO users (user_id, description, keywords, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO users (user_id, description, keywords, conversation_id, wakeup_cmd, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(user_id) DO UPDATE SET
                 description=excluded.description,
                 keywords=excluded.keywords,
+                conversation_id=COALESCE(excluded.conversation_id, users.conversation_id),
+                wakeup_cmd=COALESCE(excluded.wakeup_cmd, users.wakeup_cmd),
                 updated_at=CURRENT_TIMESTAMP
-        """, (user_id, desc, keywords))
+        """, (user_id, desc, keywords, conv_id, wakeup_cmd))
         conn.commit()
         print(f"User '{user_id}' registered/updated successfully.")
 
@@ -389,11 +462,13 @@ def cmd_user(args):
             conn.close()
             sys.exit(1)
         print("=" * 60)
-        print(f"User ID:       {row['user_id']}")
-        print(f"Description:   {row['description']}")
-        print(f"Keywords:      {row['keywords']}")
-        print(f"Registered:    {row['registered_at']}")
-        print(f"Last Updated:  {row['updated_at']}")
+        print(f"User ID:         {row['user_id']}")
+        print(f"Description:     {row['description']}")
+        print(f"Keywords:        {row['keywords']}")
+        print(f"Conversation ID: {row['conversation_id'] or 'None'}")
+        print(f"Wakeup Command:  {row['wakeup_cmd'] or 'None'}")
+        print(f"Registered:      {row['registered_at']}")
+        print(f"Last Updated:    {row['updated_at']}")
         print("=" * 60)
 
     elif action == "find":
@@ -407,10 +482,13 @@ def cmd_user(args):
         if not rows:
             print(f"No users found matching '{args.query}'.")
         else:
-            print(f"{'USER ID':<15} {'KEYWORDS':<35} {'DESCRIPTION'}")
-            print("-" * 85)
+            print(f"{'USER ID':<12} {'WAKEUP / CONV_ID':<25} {'KEYWORDS':<30} {'DESCRIPTION'}")
+            print("-" * 95)
             for r in rows:
-                print(f"{r['user_id']:<15} {r['keywords']:<35} {r['description']}")
+                wakeup_display = r['wakeup_cmd'] or (f"conv:{r['conversation_id']}" if r['conversation_id'] else "none")
+                if len(wakeup_display) > 23:
+                    wakeup_display = wakeup_display[:20] + "..."
+                print(f"{r['user_id']:<12} {wakeup_display:<25} {r['keywords']:<30} {r['description']}")
 
     elif action == "list":
         cursor.execute("SELECT * FROM users ORDER BY user_id ASC")
@@ -418,10 +496,13 @@ def cmd_user(args):
         if not rows:
             print("No users registered in directory.")
         else:
-            print(f"{'USER ID':<15} {'KEYWORDS':<35} {'DESCRIPTION'}")
-            print("-" * 85)
+            print(f"{'USER ID':<12} {'WAKEUP / CONV_ID':<25} {'KEYWORDS':<30} {'DESCRIPTION'}")
+            print("-" * 95)
             for r in rows:
-                print(f"{r['user_id']:<15} {r['keywords']:<35} {r['description']}")
+                wakeup_display = r['wakeup_cmd'] or (f"conv:{r['conversation_id']}" if r['conversation_id'] else "none")
+                if len(wakeup_display) > 23:
+                    wakeup_display = wakeup_display[:20] + "..."
+                print(f"{r['user_id']:<12} {wakeup_display:<25} {r['keywords']:<30} {r['description']}")
 
     conn.close()
 
@@ -469,6 +550,7 @@ def main():
     p_send.add_argument("--attach", "-a", help="Path to attachment file (e.g. tarball .tar.xz)")
     p_send.add_argument("--erase-original", "--erase", action="store_true", help="Erase original file(s) after sending (applies when using --file / --attach)")
     p_send.add_argument("--timestamp", help="Custom timestamp (default: current local timestamp YYYYMMDD_HHMMSS)")
+    p_send.add_argument("--no-wakeup", action="store_true", help="Skip triggering recipient's automatic wakeup command")
 
     # user
     p_user = subparsers.add_parser("user", help="Manage and discover agent users in the directory")
@@ -479,6 +561,8 @@ def main():
     p_u_reg.add_argument("--id", required=True, help="User/Agent ID (e.g. oschan, kuro)")
     p_u_reg.add_argument("--desc", required=True, help="Description of the user/agent")
     p_u_reg.add_argument("--keywords", required=True, help="Comma-separated keywords/capabilities")
+    p_u_reg.add_argument("--conv-id", help="Conversation ID for agy headless resume")
+    p_u_reg.add_argument("--wakeup-cmd", help="Custom wakeup shell command template (supports {sender}, {topic}, {prompt}, {conv_id})")
 
     # user list
     p_user_sub.add_parser("list", help="List all registered agents and users")
