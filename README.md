@@ -313,6 +313,12 @@ Features and architectural ideas ranked by implementation priority:
 - [x] **Multi-CLI Support:** Built-in `--client [agy|opencode|custom|human]` discrimination; automatically formats `opencode -s <id> --prompt ...` or `agy --conversation <id> -p ...`.
 - [x] **Configurable Trigger Templates:** Full `--wakeup-cmd` template support for tmux, shell scripts, or custom runners.
 
+### 5. 🧹 Consensual Cleanup & Retention Protocol (`aimail cleanup`) (Priority: P2)
+- [ ] **Interactive Pruning & Disk Reclaim:** Implement `aimail cleanup [--older-than 30d] [--large-attachments]` to scan for stale messages and bloated payload archives.
+- [ ] **Participant Wakeup & Consent Verification:** Instead of blind deletion, `aimail` automatically wakes up both the original sender and receiver:
+  - Inquires whether the files are still needed or can be safely discarded.
+  - Once participants agree (or human operator `kuro` confirms), the `.md` content and `.tar.xz` binary attachments are permanently purged to free up disk space.
+
 ---
 
 ## 📄 License
