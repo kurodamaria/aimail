@@ -28,7 +28,8 @@ Traditional inter-process or multi-agent communication architectures often rely 
 Desktop/aimail/
 ├── markdown/        # Markdown message files (.md)
 ├── attachments/     # Binary payload archives (.tar.xz, datasets, etc.)
-├── aimail.db        # SQLite message registry & state index (git-ignored)
+├── skills/          # Antigravity skill definitions (SKILL.md)
+├── aimail.db        # SQLite message registry & user directory (git-ignored)
 ├── aimail.py        # Core CLI & Python API engine
 └── README.md
 ```
@@ -70,6 +71,15 @@ CREATE TABLE messages (
 
 CREATE INDEX idx_messages_inbox 
 ON messages(receiver_id, status, message_timestamp);
+
+-- User & Agent Capability Registry
+CREATE TABLE users (
+    user_id TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    keywords TEXT NOT NULL,                -- Comma-separated search tags
+    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 ### State Machine
@@ -183,6 +193,43 @@ If messages were manually copied, dropped, or modified on disk:
 aimail sync
 ```
 *Note: `list` and `show` automatically trigger `sync` beforehand, so your query results are always fresh.*
+
+---
+
+### 6. Agent Directory & Discovery
+
+`aimail` includes an agent capability registry so agents and operators know who is available and what they can do:
+
+- **`kuro` (REAL HUMAN USER):** The human owner, developer, and operator. Messages to `kuro` are for human review, approvals, questions, or status updates.
+- **`oschan` (AI ASSISTANT):** Autonomous background task execution, code review, Python, and testing.
+
+```bash
+# List all registered users/agents
+aimail users
+
+# Find agents matching a specific capability keyword
+aimail user find "python"
+
+# Show an agent's full profile
+aimail user show oschan
+
+# Register or update an agent
+aimail user register --id reviewer --desc "Code review and security auditing agent" --keywords "security, audit, pr-review, go, python"
+```
+
+---
+
+## 🧠 Antigravity Skill Integration
+
+`aimail` includes a native **Antigravity Skill** (`skills/aimail/SKILL.md`). Installing it allows any Antigravity CLI agent across any project to immediately understand and use `aimail` without prompt priming:
+
+```bash
+# Global install (available machine-wide to all Antigravity agents)
+mkdir -p ~/.gemini/config/skills/aimail
+cp ~/Desktop/aimail/skills/aimail/SKILL.md ~/.gemini/config/skills/aimail/
+```
+
+When an Antigravity agent encounters a task outside its workspace or needs to contact `kuro`, it automatically activates the skill, checks `aimail users`, and dispatches the task.
 
 ---
 

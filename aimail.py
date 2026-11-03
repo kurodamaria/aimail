@@ -59,6 +59,25 @@ def init_db(db_path: Path):
             CREATE INDEX IF NOT EXISTS idx_messages_inbox
             ON messages(receiver_id, status, message_timestamp);
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                keywords TEXT NOT NULL,
+                registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        # Seed initial users if empty
+        cursor.execute("SELECT COUNT(*) FROM users")
+        if cursor.fetchone()[0] == 0:
+            cursor.executemany("""
+                INSERT INTO users (user_id, description, keywords)
+                VALUES (?, ?, ?)
+            """, [
+                ("kuro", "Real human user, developer, and system owner.", "human, developer, owner, operator, feedback, decisions"),
+                ("oschan", "AI assistant and autonomous agent for background task execution, code review, and development.", "agent, python, coding, git, review, automation, testing")
+            ])
         conn.commit()
 
 
@@ -309,6 +328,12 @@ def cmd_send(args):
     # Insert into database
     conn = get_connection(messages_dir)
     cursor = conn.cursor()
+
+    # Informative notice if receiver is not registered
+    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (receiver,))
+    if not cursor.fetchone():
+        print(f"Notice: Receiver '{receiver}' is not in user directory. Run 'aimail users' to see registered agents.")
+
     cursor.execute("""
         INSERT INTO messages (sender_id, receiver_id, topic, message_timestamp, md_file_path, attachment_path, status)
         VALUES (?, ?, ?, ?, ?, ?, 'new')
@@ -331,6 +356,79 @@ def cmd_send(args):
                 print(f"Erased original attachment: {source_attach}")
             except OSError as e:
                 print(f"Warning: Failed to erase original attachment: {e}", file=sys.stderr)
+
+
+def cmd_user(args):
+    messages_dir = Path(args.dir).resolve()
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    action = getattr(args, "user_action", "list")
+
+    if action == "register":
+        user_id = args.id.strip()
+        desc = args.desc.strip()
+        keywords = args.keywords.strip()
+        cursor.execute("""
+            INSERT INTO users (user_id, description, keywords, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                description=excluded.description,
+                keywords=excluded.keywords,
+                updated_at=CURRENT_TIMESTAMP
+        """, (user_id, desc, keywords))
+        conn.commit()
+        print(f"User '{user_id}' registered/updated successfully.")
+
+    elif action == "show":
+        user_id = args.id.strip()
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            print(f"User '{user_id}' not found.", file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+        print("=" * 60)
+        print(f"User ID:       {row['user_id']}")
+        print(f"Description:   {row['description']}")
+        print(f"Keywords:      {row['keywords']}")
+        print(f"Registered:    {row['registered_at']}")
+        print(f"Last Updated:  {row['updated_at']}")
+        print("=" * 60)
+
+    elif action == "find":
+        query = f"%{args.query.strip()}%"
+        cursor.execute("""
+            SELECT * FROM users 
+            WHERE user_id LIKE ? OR description LIKE ? OR keywords LIKE ?
+            ORDER BY user_id ASC
+        """, (query, query, query))
+        rows = cursor.fetchall()
+        if not rows:
+            print(f"No users found matching '{args.query}'.")
+        else:
+            print(f"{'USER ID':<15} {'KEYWORDS':<35} {'DESCRIPTION'}")
+            print("-" * 85)
+            for r in rows:
+                print(f"{r['user_id']:<15} {r['keywords']:<35} {r['description']}")
+
+    elif action == "list":
+        cursor.execute("SELECT * FROM users ORDER BY user_id ASC")
+        rows = cursor.fetchall()
+        if not rows:
+            print("No users registered in directory.")
+        else:
+            print(f"{'USER ID':<15} {'KEYWORDS':<35} {'DESCRIPTION'}")
+            print("-" * 85)
+            for r in rows:
+                print(f"{r['user_id']:<15} {r['keywords']:<35} {r['description']}")
+
+    conn.close()
+
+
+def cmd_users(args):
+    args.user_action = "list"
+    cmd_user(args)
 
 
 def main():
@@ -372,6 +470,30 @@ def main():
     p_send.add_argument("--erase-original", "--erase", action="store_true", help="Erase original file(s) after sending (applies when using --file / --attach)")
     p_send.add_argument("--timestamp", help="Custom timestamp (default: current local timestamp YYYYMMDD_HHMMSS)")
 
+    # user
+    p_user = subparsers.add_parser("user", help="Manage and discover agent users in the directory")
+    p_user_sub = p_user.add_subparsers(dest="user_action", required=True)
+
+    # user register
+    p_u_reg = p_user_sub.add_parser("register", help="Register or update an agent user")
+    p_u_reg.add_argument("--id", required=True, help="User/Agent ID (e.g. oschan, kuro)")
+    p_u_reg.add_argument("--desc", required=True, help="Description of the user/agent")
+    p_u_reg.add_argument("--keywords", required=True, help="Comma-separated keywords/capabilities")
+
+    # user list
+    p_user_sub.add_parser("list", help="List all registered agents and users")
+
+    # user show
+    p_u_show = p_user_sub.add_parser("show", help="Show details for a specific user")
+    p_u_show.add_argument("id", help="User ID")
+
+    # user find
+    p_u_find = p_user_sub.add_parser("find", help="Search users by keyword or capability")
+    p_u_find.add_argument("query", help="Keyword or search query")
+
+    # shortcut: aimail users
+    subparsers.add_parser("users", help="Shortcut to list all registered users (same as 'aimail user list')")
+
     args = parser.parse_args()
 
     if args.command == "sync":
@@ -384,6 +506,10 @@ def main():
         cmd_show(args)
     elif args.command == "send":
         cmd_send(args)
+    elif args.command == "user":
+        cmd_user(args)
+    elif args.command == "users":
+        cmd_users(args)
 
 
 if __name__ == "__main__":
