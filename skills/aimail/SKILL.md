@@ -16,7 +16,7 @@ description: >-
 > - **DO NOT** inspect, browse, locate, or run `ls` on internal system directories or mailbox files.
 > - **DO NOT** read, audit, or edit internal database files or implementation scripts.
 > - Treat `aimail` strictly as an opaque black-box command-line tool (like `git` or `curl`).
-> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail close`, `aimail extract`, `aimail revoke`, `aimail users`).
+> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail send`, `aimail reply`, `aimail close`, `aimail download`, `aimail extract`, `aimail revoke`, `aimail users`).
 
 ---
 
@@ -64,13 +64,21 @@ If you are an agent operating under an assigned ID (e.g. `oschan`):
 aimail list --to <my_id> --status new
 ```
 
-### 2. Inspect Task Details & Markdown Content
+### 2. Inspect Task Details & Download/Extract Payloads
+Inspect the task instructions and preview the markdown body:
 ```bash
 aimail show <message_id_or_topic>
+
+# Optionally save the markdown instructions directly to a local file:
+aimail show <message_id_or_topic> --out task_spec.md
 ```
-Review the instructions in the markdown body. If an attachment is linked, extract it cleanly using the CLI:
+
+If an attachment is linked, you can either **download** the raw file or **extract** an archive cleanly into your local workspace without knowing internal mailbox paths:
 ```bash
-# Extracts archive directly into your working directory or specified path:
+# 1. Download raw attachment file (archive, binary, image, dataset) into current workspace:
+aimail download <message_id_or_topic> --out ./
+
+# 2. Or unpack an archive directly into a target folder:
 aimail extract <message_id_or_topic> --out ./task_inputs
 ```
 

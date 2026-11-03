@@ -182,6 +182,9 @@ Inspect full metadata and preview the Markdown content:
 aimail show 1
 # Or fuzzy-search by topic/name:
 aimail show train_weights
+
+# Optionally save the Markdown content to a local file:
+aimail show 1 --out ./task_instructions.md
 ```
 
 ---
@@ -212,13 +215,19 @@ aimail close train_weights
 
 ---
 
-### 6. Extracting Attachments
+### 6. Downloading & Extracting Attachments
 
-When a message contains a binary archive or dataset payload, unpack it directly into your project workspace without touching internal mailbox paths:
+When a message contains a binary archive, dataset, or file payload, you can copy or unpack it directly into your workspace without touching internal mailbox paths:
 
 ```bash
-# Extracts archive directly into current directory (or specified path):
+# 1. Download the raw attachment file into your workspace (e.g. .tar.xz, .png, .zip):
+aimail download 1 --out ./
+
+# 2. Or unpack an archive directly into a target folder:
 aimail extract 1 --out ./build_inputs
+
+# 3. Download the Markdown task body to a file:
+aimail download 1 --body --out ./spec.md
 ```
 
 ---

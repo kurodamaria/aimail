@@ -402,6 +402,15 @@ def cmd_show(args):
     if file_path.exists():
         print("\n--- CONTENT PREVIEW ---\n")
         print(file_path.read_text(encoding="utf-8"))
+        if getattr(args, "out", None):
+            out_dest = Path(args.out).resolve()
+            if out_dest.is_dir():
+                out_file = out_dest / file_path.name
+            else:
+                out_dest.parent.mkdir(parents=True, exist_ok=True)
+                out_file = out_dest
+            shutil.copy2(file_path, out_file)
+            print(f"\n✓ Saved markdown file to: {out_file}")
     else:
         print(f"\nWarning: File {file_path} not found on disk.")
 
@@ -502,9 +511,10 @@ def cmd_send(args):
     target_attach_filename = None
     db_attach_path = None
     if source_attach:
-        # Preserve original extension suffix (e.g. .tar.xz)
-        if source_attach.name.endswith(".tar.xz"):
-            ext = ".tar.xz"
+        # Preserve original extension suffix (e.g. .tar.xz, .tar.gz, .tar.bz2)
+        name_lower = source_attach.name.lower()
+        if name_lower.endswith((".tar.xz", ".tar.gz", ".tar.bz2", ".tar.zst")):
+            ext = "." + ".".join(source_attach.name.split(".")[-2:])
         else:
             ext = source_attach.suffix
         target_attach_filename = f"{sender}-{receiver}-{topic}-{ts}{ext}"
@@ -645,6 +655,73 @@ def cmd_extract(args):
         print(f"Copied attachment '{archive_path.name}' to: {dest_file}")
 
 
+def cmd_download(args):
+    """Download/copy message attachment or markdown body to caller workspace."""
+    messages_dir = Path(args.dir).resolve()
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    target = args.target
+    if target.isdigit():
+        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
+    else:
+        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        print(f"Error: Message '{target}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    out_dest = Path(args.out or ".").resolve()
+
+    # If --body, download markdown
+    if getattr(args, "body", False):
+        md_file = messages_dir / row["md_file_path"]
+        if not md_file.exists():
+            md_file = messages_dir / MARKDOWN_SUBDIR / Path(row["md_file_path"]).name
+        if not md_file.exists():
+            print(f"Error: Markdown file '{md_file}' not found on disk.", file=sys.stderr)
+            sys.exit(1)
+        if out_dest.is_dir() or str(args.out or "").endswith("/"):
+            out_dest.mkdir(parents=True, exist_ok=True)
+            dest = out_dest / md_file.name
+        else:
+            out_dest.parent.mkdir(parents=True, exist_ok=True)
+            dest = out_dest
+        shutil.copy2(md_file, dest)
+        print(f"✓ Downloaded markdown file to: {dest}")
+        return
+
+    # Download attachment
+    if not row["attachment_path"]:
+        print(f"Message #{row['id']} ('{row['topic']}') has no attachment.", file=sys.stderr)
+        sys.exit(1)
+
+    archive_path = messages_dir / row["attachment_path"]
+    if not archive_path.exists():
+        archive_path = messages_dir / ATTACHMENTS_SUBDIR / Path(row["attachment_path"]).name
+
+    if not archive_path.exists():
+        print(f"Error: Attachment file '{archive_path}' not found on disk.", file=sys.stderr)
+        sys.exit(1)
+
+    if getattr(args, "extract", False):
+        args.out = str(out_dest)
+        cmd_extract(args)
+        return
+
+    if out_dest.is_dir() or str(args.out or "").endswith("/"):
+        out_dest.mkdir(parents=True, exist_ok=True)
+        dest_file = out_dest / archive_path.name
+    else:
+        out_dest.parent.mkdir(parents=True, exist_ok=True)
+        dest_file = out_dest
+
+    shutil.copy2(archive_path, dest_file)
+    print(f"✓ Downloaded attachment '{archive_path.name}' to: {dest_file}")
+
+
 def cmd_user(args):
     messages_dir = Path(args.dir).resolve()
     conn = get_connection(messages_dir)
@@ -783,6 +860,7 @@ def main():
     # show
     p_show = subparsers.add_parser("show", help="Show message details and content")
     p_show.add_argument("target", help="Message ID or filename")
+    p_show.add_argument("--out", "-o", help="Save markdown content directly to specified file path")
 
     # send
     p_send = subparsers.add_parser("send", help="Send a message by copying markdown or passing direct string content")
@@ -798,6 +876,13 @@ def main():
     p_send.add_argument("--erase-original", "--erase", action="store_true", help="Erase original file(s) after sending (applies when using --file / --attach)")
     p_send.add_argument("--timestamp", help="Custom timestamp (default: current local timestamp YYYYMMDD_HHMMSS)")
     p_send.add_argument("--no-wakeup", action="store_true", help="Skip triggering recipient's automatic wakeup command")
+
+    # download
+    p_dl = subparsers.add_parser("download", help="Download (copy) attachment or markdown body directly into your workspace")
+    p_dl.add_argument("target", help="Message ID or topic/filename")
+    p_dl.add_argument("--out", "-o", default=".", help="Destination file path or directory (default: current directory)")
+    p_dl.add_argument("--body", action="store_true", help="Download the message markdown body instead of the attachment")
+    p_dl.add_argument("--extract", "-x", action="store_true", help="Automatically unpack archive attachments into destination directory")
 
     # extract
     p_ext = subparsers.add_parser("extract", help="Extract or copy a message's attachment to a target directory")
@@ -852,6 +937,8 @@ def main():
         cmd_send(args)
     elif args.command == "reply":
         cmd_reply(args)
+    elif args.command == "download":
+        cmd_download(args)
     elif args.command == "extract":
         cmd_extract(args)
     elif args.command == "close":
