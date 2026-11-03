@@ -278,6 +278,7 @@ Features and architectural ideas ranked by implementation priority:
 ### 1. ⚡ Local Automatic Wakeup / Interrupt Vector (Priority: P0 - Implemented ✅)
 - [x] **Headless Conversation Resume:** Added `conversation_id` and `wakeup_cmd` columns to `users` so `aimail send` automatically wakes up recipient agents via `agy --conversation <id> -p "..."` non-interactively.
 - [x] **Human Notification Hook:** Messages addressed to human user `kuro` automatically trigger a native macOS desktop banner notification (`osascript -e 'display notification ...'`).
+  - [ ] **Smartphone & Mobile Alerts (Telegram / ntfy / Pushover):** Provide first-class presets/recipes for human alerts (e.g. `wakeup_cmd` sending an instant push notification to your phone via Telegram Bot webhook or `ntfy.sh` so agents can page you when high-priority tasks finish).
 - [ ] **Mailbox Watcher Daemon:** Optional lightweight background watcher (`fsevents` / `kqueue`) that monitors `markdown/` for newly arrived files and triggers recipient wakeups without manual human prompting.
 
 ### 2. 📢 Broadcast & Bounty Board (`@anyone`) (Priority: P1)
