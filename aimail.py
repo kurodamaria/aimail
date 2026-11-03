@@ -65,6 +65,7 @@ def init_db(db_path: Path):
                 user_id TEXT PRIMARY KEY,
                 description TEXT NOT NULL,
                 keywords TEXT NOT NULL,
+                client_type TEXT DEFAULT 'agy',
                 conversation_id TEXT,
                 wakeup_cmd TEXT,
                 registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -78,16 +79,18 @@ def init_db(db_path: Path):
             cursor.execute("ALTER TABLE users ADD COLUMN conversation_id TEXT;")
         if "wakeup_cmd" not in existing_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN wakeup_cmd TEXT;")
+        if "client_type" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN client_type TEXT DEFAULT 'agy';")
 
         # Seed initial users if empty
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
             cursor.executemany("""
-                INSERT INTO users (user_id, description, keywords, conversation_id, wakeup_cmd)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (user_id, description, keywords, client_type, conversation_id, wakeup_cmd)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, [
-                ("kuro", "Real human user, developer, and system owner.", "human, developer, owner, operator, feedback, decisions", None, 'osascript -e \'display notification "{prompt}" with title "aimail: message from {sender}"\''),
-                ("oschan", "AI assistant and autonomous agent for background task execution, code review, and development.", "agent, python, coding, git, review, automation, testing", None, None)
+                ("kuro", "Real human user, developer, and system owner.", "human, developer, owner, operator, feedback, decisions", "human", None, 'osascript -e \'display notification "{prompt}" with title "aimail: message from {sender}"\''),
+                ("oschan", "AI assistant and autonomous agent for background task execution, code review, and development.", "agent, python, coding, git, review, automation, testing", "agy", None, None)
             ])
         conn.commit()
 
@@ -288,17 +291,19 @@ def cmd_show(args):
 def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messages_dir: Path):
     conn = get_connection(messages_dir)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, conversation_id, wakeup_cmd FROM users WHERE user_id = ?", (receiver,))
+    cursor.execute("SELECT user_id, client_type, conversation_id, wakeup_cmd FROM users WHERE user_id = ?", (receiver,))
     row = cursor.fetchone()
     conn.close()
 
     if not row:
         return
 
+    client_type = (row["client_type"] or "agy").lower()
     conv_id = row["conversation_id"]
     wakeup_template = row["wakeup_cmd"]
 
     prompt = f"New aimail received from {sender} on topic '{topic}'. Check inbox with 'aimail list --to {receiver} --status new' and 'aimail show {topic}'."
+    escaped_prompt = prompt.replace('"', '\\"')
 
     final_cmd = None
     if wakeup_template:
@@ -309,14 +314,19 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
                 topic=topic,
                 file=file_path,
                 prompt=prompt,
-                conv_id=conv_id or ""
+                conv_id=conv_id or "",
+                client=client_type
             )
         except (KeyError, IndexError):
             final_cmd = wakeup_template
     elif conv_id:
-        escaped_prompt = prompt.replace('"', '\\"')
-        final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
-    elif receiver == "kuro":
+        if client_type == "agy":
+            final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
+        elif client_type == "opencode":
+            final_cmd = f'opencode -s "{conv_id}" --prompt "{escaped_prompt}"'
+        else:
+            final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
+    elif client_type == "human" or receiver == "kuro":
         escaped_msg = f"New message from {sender} on '{topic}'".replace('"', '\\"')
         final_cmd = f'osascript -e \'display notification "{escaped_msg}" with title "aimail"\''
 
@@ -433,6 +443,7 @@ def cmd_user(args):
         user_id = args.id.strip()
         desc = args.desc.strip()
         keywords = args.keywords.strip()
+        client_type = getattr(args, "client", "agy").strip()
         conv_id = getattr(args, "conv_id", None)
         if conv_id:
             conv_id = conv_id.strip()
@@ -441,17 +452,18 @@ def cmd_user(args):
             wakeup_cmd = wakeup_cmd.strip()
 
         cursor.execute("""
-            INSERT INTO users (user_id, description, keywords, conversation_id, wakeup_cmd, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO users (user_id, description, keywords, client_type, conversation_id, wakeup_cmd, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(user_id) DO UPDATE SET
                 description=excluded.description,
                 keywords=excluded.keywords,
+                client_type=excluded.client_type,
                 conversation_id=COALESCE(excluded.conversation_id, users.conversation_id),
                 wakeup_cmd=COALESCE(excluded.wakeup_cmd, users.wakeup_cmd),
                 updated_at=CURRENT_TIMESTAMP
-        """, (user_id, desc, keywords, conv_id, wakeup_cmd))
+        """, (user_id, desc, keywords, client_type, conv_id, wakeup_cmd))
         conn.commit()
-        print(f"User '{user_id}' registered/updated successfully.")
+        print(f"User '{user_id}' ({client_type}) registered/updated successfully.")
 
     elif action == "show":
         user_id = args.id.strip()
@@ -463,6 +475,7 @@ def cmd_user(args):
             sys.exit(1)
         print("=" * 60)
         print(f"User ID:         {row['user_id']}")
+        print(f"Client Type:     {row['client_type'] or 'agy'}")
         print(f"Description:     {row['description']}")
         print(f"Keywords:        {row['keywords']}")
         print(f"Conversation ID: {row['conversation_id'] or 'None'}")
@@ -475,20 +488,21 @@ def cmd_user(args):
         query = f"%{args.query.strip()}%"
         cursor.execute("""
             SELECT * FROM users 
-            WHERE user_id LIKE ? OR description LIKE ? OR keywords LIKE ?
+            WHERE user_id LIKE ? OR description LIKE ? OR keywords LIKE ? OR client_type LIKE ?
             ORDER BY user_id ASC
-        """, (query, query, query))
+        """, (query, query, query, query))
         rows = cursor.fetchall()
         if not rows:
             print(f"No users found matching '{args.query}'.")
         else:
-            print(f"{'USER ID':<12} {'WAKEUP / CONV_ID':<25} {'KEYWORDS':<30} {'DESCRIPTION'}")
-            print("-" * 95)
+            print(f"{'USER ID':<10} {'CLIENT':<10} {'WAKEUP / CONV_ID':<26} {'KEYWORDS':<28} {'DESCRIPTION'}")
+            print("-" * 105)
             for r in rows:
-                wakeup_display = r['wakeup_cmd'] or (f"conv:{r['conversation_id']}" if r['conversation_id'] else "none")
-                if len(wakeup_display) > 23:
-                    wakeup_display = wakeup_display[:20] + "..."
-                print(f"{r['user_id']:<12} {wakeup_display:<25} {r['keywords']:<30} {r['description']}")
+                c_type = r['client_type'] or 'agy'
+                wakeup_display = r['wakeup_cmd'] or (f"{c_type}:{r['conversation_id']}" if r['conversation_id'] else "none")
+                if len(wakeup_display) > 24:
+                    wakeup_display = wakeup_display[:21] + "..."
+                print(f"{r['user_id']:<10} {c_type:<10} {wakeup_display:<26} {r['keywords']:<28} {r['description']}")
 
     elif action == "list":
         cursor.execute("SELECT * FROM users ORDER BY user_id ASC")
@@ -496,13 +510,14 @@ def cmd_user(args):
         if not rows:
             print("No users registered in directory.")
         else:
-            print(f"{'USER ID':<12} {'WAKEUP / CONV_ID':<25} {'KEYWORDS':<30} {'DESCRIPTION'}")
-            print("-" * 95)
+            print(f"{'USER ID':<10} {'CLIENT':<10} {'WAKEUP / CONV_ID':<26} {'KEYWORDS':<28} {'DESCRIPTION'}")
+            print("-" * 105)
             for r in rows:
-                wakeup_display = r['wakeup_cmd'] or (f"conv:{r['conversation_id']}" if r['conversation_id'] else "none")
-                if len(wakeup_display) > 23:
-                    wakeup_display = wakeup_display[:20] + "..."
-                print(f"{r['user_id']:<12} {wakeup_display:<25} {r['keywords']:<30} {r['description']}")
+                c_type = r['client_type'] or 'agy'
+                wakeup_display = r['wakeup_cmd'] or (f"{c_type}:{r['conversation_id']}" if r['conversation_id'] else "none")
+                if len(wakeup_display) > 24:
+                    wakeup_display = wakeup_display[:21] + "..."
+                print(f"{r['user_id']:<10} {c_type:<10} {wakeup_display:<26} {r['keywords']:<28} {r['description']}")
 
     conn.close()
 
@@ -559,10 +574,11 @@ def main():
     # user register
     p_u_reg = p_user_sub.add_parser("register", help="Register or update an agent user")
     p_u_reg.add_argument("--id", required=True, help="User/Agent ID (e.g. oschan, kuro)")
+    p_u_reg.add_argument("--client", choices=["agy", "opencode", "custom", "human"], default="agy", help="Client runtime type: agy, opencode, custom, human (default: agy)")
     p_u_reg.add_argument("--desc", required=True, help="Description of the user/agent")
     p_u_reg.add_argument("--keywords", required=True, help="Comma-separated keywords/capabilities")
-    p_u_reg.add_argument("--conv-id", help="Conversation ID for agy headless resume")
-    p_u_reg.add_argument("--wakeup-cmd", help="Custom wakeup shell command template (supports {sender}, {topic}, {prompt}, {conv_id})")
+    p_u_reg.add_argument("--conv-id", help="Conversation ID for agy/opencode resume")
+    p_u_reg.add_argument("--wakeup-cmd", help="Custom wakeup shell command template (supports {sender}, {topic}, {prompt}, {conv_id}, {client})")
 
     # user list
     p_user_sub.add_parser("list", help="List all registered agents and users")

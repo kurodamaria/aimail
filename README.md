@@ -213,11 +213,14 @@ aimail user find "python"
 # Show an agent's full profile
 aimail user show oschan
 
-# Register an agent with an active Antigravity conversation ID for automatic wakeup:
-aimail user register --id oschan --desc "Task execution agent" --keywords "python, git" --conv-id "0ee17217-cb82-4133-b3f7-60642fb46600"
+# Register an Antigravity agent:
+aimail user register --id oschan --client agy --desc "Task execution agent" --keywords "python, git" --conv-id "0ee17217-cb82-4133-b3f7-60642fb46600"
 
-# Register an agent with a custom wakeup command (e.g. OpenCode, tmux, script):
-aimail user register --id coder --desc "OpenCode agent" --keywords "code, refactor" --wakeup-cmd "opencode -s coder -p '{prompt}'"
+# Register an OpenCode agent:
+aimail user register --id coder --client opencode --desc "OpenCode agent" --keywords "code, refactor" --conv-id "coder-session-1"
+
+# Register a custom/tmux agent:
+aimail user register --id bot --client custom --desc "Custom runner" --keywords "scripts" --wakeup-cmd "tmux send-keys -t worker '{prompt}' Enter"
 ```
 
 ---
@@ -226,9 +229,10 @@ aimail user register --id coder --desc "OpenCode agent" --keywords "code, refact
 
 When a message is sent via `aimail send`, the recipient's wakeup handler is triggered automatically in a detached background process:
 
-- **Antigravity Agents:** If `--conv-id` is set, `aimail` executes `agy --conversation <conv-id> -p "<prompt>"` in the background to wake the session non-interactively.
-- **Custom / OpenCode Agents:** If `--wakeup-cmd` is set, `aimail` formats and executes the custom shell command (supports `{sender}`, `{receiver}`, `{topic}`, `{prompt}`, `{conv_id}`).
-- **Human Operator (`kuro`):** Displays a native macOS desktop banner notification.
+- **Antigravity (`--client agy`):** Automatically executes `agy --conversation <conv-id> -p "<prompt>"` in the background.
+- **OpenCode (`--client opencode`):** Automatically executes `opencode -s <conv-id> --prompt "<prompt>"` in the background.
+- **Custom (`--client custom`):** Formats and executes your `--wakeup-cmd` template (supports `{sender}`, `{receiver}`, `{topic}`, `{prompt}`, `{conv_id}`).
+- **Human Operator (`--client human` / `kuro`):** Automatically displays a native macOS desktop banner notification (or custom smartphone push alert via Telegram / `ntfy.sh`).
 - **Skip Wakeup:** Pass `--no-wakeup` to `aimail send` to deposit the message silently without triggering the recipient.
 
 ---
@@ -291,9 +295,9 @@ Features and architectural ideas ranked by implementation priority:
 - [ ] **Zero Remote Attack Surface:** Network transport only writes passive files; each individual node's local `aimail` is strictly responsible for waking its own local agent instances with zero open execution ports.
 - [ ] **Remote Node Configuration:** Simple CLI syntax to register remote nodes (e.g. `aimail send --to gpu_agent@cloud-rig ...`).
 
-### 4. 🔌 Universal Agent Runtimes & Adapters (Priority: P3)
-- [ ] **Multi-CLI Support:** Support non-`agy` agent runners (e.g. OpenCode, custom Python loops, or `tmux send-keys` for live visual panes).
-- [ ] **Configurable Trigger Templates:** Allow each agent in the `users` table to define its own execution command template.
+### 4. 🔌 Universal Agent Runtimes & Adapters (Priority: P3 - Implemented ✅)
+- [x] **Multi-CLI Support:** Built-in `--client [agy|opencode|custom|human]` discrimination; automatically formats `opencode -s <id> --prompt ...` or `agy --conversation <id> -p ...`.
+- [x] **Configurable Trigger Templates:** Full `--wakeup-cmd` template support for tmux, shell scripts, or custom runners.
 
 ---
 
