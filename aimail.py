@@ -51,7 +51,7 @@ def init_db(db_path: Path):
                 message_timestamp TEXT NOT NULL,
                 md_file_path TEXT NOT NULL UNIQUE,
                 attachment_path TEXT,
-                status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new', 'read', 'replied')),
+                status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new', 'processing', 'read', 'replied', 'failed')),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -60,6 +60,38 @@ def init_db(db_path: Path):
             CREATE INDEX IF NOT EXISTS idx_messages_inbox
             ON messages(receiver_id, status, message_timestamp);
         """)
+
+        # Migration: Ensure messages table allows new statuses ('processing', 'failed')
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'")
+        table_sql = cursor.fetchone()
+        if table_sql and "processing" not in table_sql[0]:
+            cursor.execute("PRAGMA foreign_keys = OFF;")
+            cursor.execute("""
+                CREATE TABLE messages_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender_id TEXT NOT NULL,
+                    receiver_id TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    message_timestamp TEXT NOT NULL,
+                    md_file_path TEXT NOT NULL UNIQUE,
+                    attachment_path TEXT,
+                    status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new', 'processing', 'read', 'replied', 'failed')),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                INSERT INTO messages_migration (id, sender_id, receiver_id, topic, message_timestamp, md_file_path, attachment_path, status, created_at, updated_at)
+                SELECT id, sender_id, receiver_id, topic, message_timestamp, md_file_path, attachment_path, status, created_at, updated_at
+                FROM messages;
+            """)
+            cursor.execute("DROP TABLE messages;")
+            cursor.execute("ALTER TABLE messages_migration RENAME TO messages;")
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_inbox
+                ON messages(receiver_id, status, message_timestamp);
+            """)
+            cursor.execute("PRAGMA foreign_keys = ON;")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
@@ -207,11 +239,11 @@ def cmd_list(args):
         return
 
     # Print table header
-    print(f"{'ID':<4} {'STATUS':<8} {'SENDER':<12} {'RECEIVER':<12} {'TOPIC':<16} {'TIMESTAMP':<18} {'ATTACHMENT':<12} {'FILE'}")
-    print("-" * 105)
+    print(f"{'ID':<4} {'STATUS':<12} {'SENDER':<12} {'RECEIVER':<12} {'TOPIC':<20} {'TIMESTAMP':<18} {'ATTACHMENT':<12} {'FILE'}")
+    print("-" * 115)
     for row in rows:
         attach_str = "yes" if row["attachment_path"] else "-"
-        print(f"{row['id']:<4} {row['status']:<8} {row['sender_id']:<12} {row['receiver_id']:<12} {row['topic']:<16} {row['message_timestamp']:<18} {attach_str:<12} {row['md_file_path']}")
+        print(f"{row['id']:<4} {row['status']:<12} {row['sender_id']:<12} {row['receiver_id']:<12} {row['topic']:<20} {row['message_timestamp']:<18} {attach_str:<12} {row['md_file_path']}")
 
 
 def cmd_mark(args):
@@ -282,9 +314,9 @@ def cmd_revoke(args):
         sys.exit(1)
 
     # Check status
-    if msg_row["status"] in ("read", "replied") and not getattr(args, "force", False):
+    if msg_row["status"] in ("processing", "read", "replied") and not getattr(args, "force", False):
         print(
-            f"Notice: Message #{msg_row['id']} ('{msg_row['topic']}') has already been marked as '{msg_row['status']}' by '{msg_row['receiver_id']}'.\n"
+            f"Notice: Message #{msg_row['id']} ('{msg_row['topic']}') has already reached status '{msg_row['status']}' (assigned to '{msg_row['receiver_id']}').\n"
             f"Pass --force to permanently revoke and delete it anyway.",
             file=sys.stderr
         )
@@ -377,7 +409,7 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
     conv_id = row["conversation_id"]
     wakeup_template = row["wakeup_cmd"]
 
-    prompt = f"New aimail received from {sender} on topic '{topic}'. Check inbox with 'aimail list --to {receiver} --status new' and 'aimail show {topic}'."
+    prompt = f"New aimail received from {sender} on topic '{topic}'. Check inbox with 'aimail show {topic}', mark it with 'aimail mark {topic} --status processing', and reply with 'aimail reply' when done."
     escaped_prompt = prompt.replace('"', '\\"')
 
     final_cmd = None
@@ -710,13 +742,13 @@ def main():
     p_list = subparsers.add_parser("list", help="List messages")
     p_list.add_argument("--to", help="Filter by receiver ID (e.g. oschan)")
     p_list.add_argument("--sender", help="Filter by sender ID")
-    p_list.add_argument("--status", choices=["new", "read", "replied", "all"], default="all", help="Filter by status (default: all)")
+    p_list.add_argument("--status", choices=["new", "processing", "read", "replied", "failed", "all"], default="all", help="Filter by status (default: all)")
     p_list.add_argument("--limit", type=int, default=20, help="Max records to return")
 
     # mark
     p_mark = subparsers.add_parser("mark", help="Update message status")
     p_mark.add_argument("target", help="Message ID or filename")
-    p_mark.add_argument("--status", choices=["new", "read", "replied"], required=True, help="New status")
+    p_mark.add_argument("--status", choices=["new", "processing", "read", "replied", "failed"], required=True, help="New status")
     p_mark.add_argument("--no-wakeup", action="store_true", help="Skip triggering sender's wakeup on reply")
 
     # reply

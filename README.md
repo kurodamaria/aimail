@@ -63,8 +63,8 @@ CREATE TABLE messages (
     message_timestamp TEXT NOT NULL,
     md_file_path TEXT NOT NULL UNIQUE,     -- e.g. "markdown/<filename>.md"
     attachment_path TEXT,                  -- e.g. "attachments/<filename>.tar.xz"
-    status TEXT NOT NULL DEFAULT 'new'     -- 'new' | 'read' | 'replied'
-        CHECK(status IN ('new', 'read', 'replied')),
+    status TEXT NOT NULL DEFAULT 'new'     -- 'new' | 'processing' | 'read' | 'replied' | 'failed'
+        CHECK(status IN ('new', 'processing', 'read', 'replied', 'failed')),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -77,6 +77,9 @@ CREATE TABLE users (
     user_id TEXT PRIMARY KEY,
     description TEXT NOT NULL,
     keywords TEXT NOT NULL,                -- Comma-separated search tags
+    client_type TEXT DEFAULT 'agy',
+    conversation_id TEXT,
+    wakeup_cmd TEXT,
     registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -85,9 +88,15 @@ CREATE TABLE users (
 ### State Machine
 
 ```
-   ┌─────────┐       agent reads       ┌──────────┐      agent responds      ┌─────────────┐
-   │   new   │  ────────────────────>  │   read   │  ─────────────────────>  │   replied   │
-   └─────────┘                         └──────────┘                          └─────────────┘
+   ┌─────────┐      agent wakes up      ┌──────────────┐     agent completes task     ┌─────────────┐
+   │   new   │  ─────────────────────>  │  processing  │  ─────────────────────────>  │   replied   │
+   └─────────┘                          └──────────────┘                              └─────────────┘
+                                                │
+                                                │ unrecoverable error
+                                                ▼
+                                        ┌──────────────┐
+                                        │    failed    │
+                                        └──────────────┘
 ```
 
 ---
@@ -224,11 +233,17 @@ aimail revoke 10 --force
 ### 7. Updating Message Status Manually
 
 ```bash
+# Mark as processing (actively working on the task)
+aimail mark 1 --status processing
+
 # Mark as read
 aimail mark 1 --status read
 
 # Mark as replied (automatically triggers wakeup notification for the original sender!)
 aimail mark 1 --status replied
+
+# Mark as failed (if an unrecoverable error or rate limit was encountered)
+aimail mark 1 --status failed
 ```
 
 ---

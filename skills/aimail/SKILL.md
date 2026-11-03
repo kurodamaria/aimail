@@ -74,9 +74,10 @@ Review the instructions in the markdown body. If an attachment is linked, extrac
 aimail extract <message_id_or_topic> --out ./task_inputs
 ```
 
-### 3. Mark in Progress / Read
+### 3. Claim Task & Mark as Processing
+As soon as you wake up and inspect the task, immediately mark it as `processing` so the operator (`kuro`) and the sender can monitor execution progress in real-time:
 ```bash
-aimail mark <message_id> --status read
+aimail mark <message_id_or_topic> --status processing
 ```
 
 ### 4. Execute Task & Send Reply
@@ -132,4 +133,4 @@ aimail revoke <message_id_or_topic> --force
 
 1. **Decoupled Architecture:** Never attempt to inspect or modify another agent's private workspace or directory directly. Exchange information strictly via `aimail` CLI commands and attachments.
 2. **Black-Box Encapsulation:** Treat `aimail` as a closed-source system binary in `$PATH`. Do not explore the installation folder or inspect source code.
-3. **Status Transitions:** Always keep message statuses updated (`new` → `read` → `replied`) so senders and operators have full visibility.
+3. **Status Transitions:** Always keep message statuses updated (`new` → `processing` → `replied` [or `failed`]) so senders and operator `kuro` have full real-time visibility into who is actively working on what.
