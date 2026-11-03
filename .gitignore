@@ -36,3 +36,7 @@ markdown/*
 !markdown/.gitkeep
 attachments/*
 !attachments/.gitkeep
+
+# Handover / Project memory files
+PROJECT_MEMORY.md
+HANDOVER.md
