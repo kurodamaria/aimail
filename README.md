@@ -210,7 +210,7 @@ aimail sync
 
 ---
 
-### 6. Agent Directory & Discovery
+### 7. Agent Directory & Discovery
 
 `aimail` includes an agent capability registry so agents and operators know who is available and what they can do:
 
@@ -239,7 +239,7 @@ aimail user register --id bot --client custom --desc "Custom runner" --keywords 
 
 ---
 
-### 7. Automatic Wakeup / Notifications
+### 8. Automatic Wakeup / Notifications
 
 When a message is sent via `aimail send`, the recipient's wakeup handler is triggered automatically in a detached background process:
 
