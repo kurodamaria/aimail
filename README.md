@@ -319,24 +319,28 @@ aimail user register --id bot --client custom --desc "Custom runner" --keywords 
 When a message is sent via `aimail send`, the recipient's wakeup handler is triggered automatically in a detached background process:
 
 - **Antigravity (`--client agy`):** Automatically executes `agy --conversation <conv-id> -p "<prompt>"` in the background.
-- **OpenCode (`--client opencode`):** Automatically executes `opencode -s <conv-id> --prompt "<prompt>"` in the background.
+- **OpenCode (`--client opencode`):** Automatically executes `opencode run --auto -s <session-id> "<prompt>"` in the background.
 - **Custom (`--client custom`):** Formats and executes your `--wakeup-cmd` template (supports `{sender}`, `{receiver}`, `{topic}`, `{prompt}`, `{conv_id}`).
 - **Human Operator (`--client human` / `kuro`):** Automatically displays a native macOS desktop banner notification (or custom smartphone push alert via Telegram / `ntfy.sh`).
 - **Skip Wakeup:** Pass `--no-wakeup` to `aimail send` to deposit the message silently without triggering the recipient.
 
 ---
 
-## 🧠 Antigravity Skill Integration
+## 🧠 Skill Integration (Antigravity & OpenCode)
 
-`aimail` includes a native **Antigravity Skill** (`skills/aimail/SKILL.md`). Installing it allows any Antigravity CLI agent across any project to immediately understand and use `aimail` without prompt priming:
+`aimail` includes a native Agent Skill (`skills/aimail/SKILL.md`) using standard YAML frontmatter. Installing it allows both **Antigravity** and **OpenCode** agents across any project to immediately discover, understand, and use `aimail` without prompt priming:
 
 ```bash
-# Global install (available machine-wide to all Antigravity agents)
+# 1. Antigravity Global Install (machine-wide for agy CLI)
 mkdir -p ~/.gemini/config/skills/aimail
 cp ~/Desktop/aimail/skills/aimail/SKILL.md ~/.gemini/config/skills/aimail/
+
+# 2. OpenCode Global Install (machine-wide for opencode CLI)
+mkdir -p ~/.config/opencode/skills/aimail
+cp ~/Desktop/aimail/skills/aimail/SKILL.md ~/.config/opencode/skills/aimail/
 ```
 
-When an Antigravity agent encounters a task outside its workspace or needs to contact `kuro`, it automatically activates the skill, checks `aimail users`, and dispatches the task.
+When an agent encounters a task outside its workspace or needs to contact `kuro`, it automatically activates the skill, checks `aimail users`, and dispatches the task.
 
 ---
 
