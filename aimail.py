@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-aimail (msgctl) - Asynchronous Agent Messaging System
+aimail - Asynchronous Agent Messaging System
 Local-first message bus and SQLite registry for agent-to-agent and human-to-agent communication.
 """
 

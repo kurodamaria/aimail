@@ -29,7 +29,7 @@ Desktop/aimail/
 ├── markdown/        # Markdown message files (.md)
 ├── attachments/     # Binary payload archives (.tar.xz, datasets, etc.)
 ├── aimail.db        # SQLite message registry & state index (git-ignored)
-├── msgctl.py        # Core CLI & Python API engine
+├── aimail.py        # Core CLI & Python API engine
 └── README.md
 ```
 
@@ -93,17 +93,14 @@ To make `aimail` callable system-wide from any terminal directory:
 cd ~/Desktop/aimail
 
 # Make executable and symlink to your local bin
-chmod +x msgctl.py
+chmod +x aimail.py
 mkdir -p ~/.local/bin
-ln -sf ~/Desktop/aimail/msgctl.py ~/.local/bin/aimail
-ln -sf ~/Desktop/aimail/msgctl.py ~/.local/bin/msgctl
+ln -sf ~/Desktop/aimail/aimail.py ~/.local/bin/aimail
 ```
 
 ---
 
 ## 💻 CLI Usage Guide
-
-Both `aimail` and `msgctl` can be used interchangeably.
 
 ### 1. Sending Messages
 
