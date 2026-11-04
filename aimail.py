@@ -1072,6 +1072,1284 @@ def cmd_users(args):
     cmd_user(args)
 
 
+def cmd_serve(args):
+    """Start the aimail web UI dashboard (single-page app served over HTTP)."""
+    import json
+    import threading
+    import time
+    import webbrowser
+    import socket
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import urlparse, parse_qs
+
+    messages_dir = Path(args.dir).resolve()
+    host = args.host
+    port = args.port
+
+    # -------------------------------------------------------------------------
+    # HTML / CSS / JS  (single-file SPA — zero external deps)
+    # -------------------------------------------------------------------------
+    HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>aimail</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#1c2128;--border:#30363d;
+  --accent:#58a6ff;--text:#e6edf3;--muted:#8b949e;
+  --new:#388bfd;--processing:#d29922;--replied:#3fb950;
+  --closed:#484f58;--failed:#f85149;--read:#8b949e;
+  --radius:8px;--transition:0.18s ease;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.5}
+
+/* ── HEADER ──────────────────────────────────────────── */
+header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 18px;height:52px;
+  background:var(--surface);border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:100;
+  backdrop-filter:blur(10px);
+}
+header .brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;letter-spacing:-0.3px}
+header .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
+header .hright{display:flex;align-items:center;gap:10px}
+#conn-indicator{width:8px;height:8px;border-radius:50%;background:var(--failed);transition:background 0.4s;flex-shrink:0}
+#conn-indicator.ok{background:var(--replied)}
+.port-badge{font-size:11px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:2px 9px}
+.btn{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:6px 14px;border-radius:6px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--text);cursor:pointer;font-size:13px;
+  transition:all var(--transition);text-decoration:none;white-space:nowrap;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.primary{background:var(--accent);color:#000;border-color:var(--accent);font-weight:600}
+.btn.primary:hover{background:#79b8ff;border-color:#79b8ff}
+.btn.danger{background:transparent;border-color:var(--failed);color:var(--failed)}
+.btn.danger:hover{background:var(--failed);color:#fff}
+.btn.sm{padding:3px 10px;font-size:12px}
+
+/* ── LAYOUT ──────────────────────────────────────────── */
+#app{display:flex;height:calc(100vh - 52px)}
+
+/* ── SIDEBAR ─────────────────────────────────────────── */
+#sidebar{
+  width:220px;min-width:160px;max-width:260px;
+  background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;
+}
+.sidebar-section{padding:12px 10px 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;font-weight:600}
+.nav-tabs{padding:4px 8px;display:flex;flex-direction:column;gap:2px}
+.nav-tab{
+  display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;
+  cursor:pointer;color:var(--muted);transition:all var(--transition);font-size:13px;
+}
+.nav-tab:hover{background:var(--surface2);color:var(--text)}
+.nav-tab.active{background:var(--accent);color:#000;font-weight:600}
+.nav-tab .tab-count{
+  margin-left:auto;font-size:11px;background:rgba(255,255,255,0.12);
+  border-radius:10px;padding:1px 7px;min-width:20px;text-align:center;
+}
+.nav-tab.active .tab-count{background:rgba(0,0,0,0.2)}
+#sidebar-divider{height:1px;background:var(--border);margin:8px 10px}
+.agent-chips{padding:4px 8px 10px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+.agent-chip{
+  display:flex;align-items:center;gap:7px;padding:5px 10px;border-radius:6px;
+  cursor:pointer;color:var(--muted);font-size:12px;transition:all var(--transition);
+}
+.agent-chip:hover{background:var(--surface2);color:var(--text)}
+.agent-chip.active{color:var(--accent);background:rgba(88,166,255,0.08)}
+.agent-avatar{
+  width:22px;height:22px;border-radius:50%;background:var(--border);
+  display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;
+  flex-shrink:0;text-transform:uppercase;color:var(--text);
+}
+
+/* ── MESSAGE LIST ────────────────────────────────────── */
+#main{display:flex;flex:1;overflow:hidden;min-width:0}
+#msg-list-pane{
+  width:340px;min-width:260px;border-right:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;
+}
+#list-header{
+  padding:12px 14px 10px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;
+}
+#list-header h2{font-size:15px;font-weight:600;flex:1}
+#search-box{
+  width:100%;padding:7px 10px;background:var(--surface2);
+  border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;
+  outline:none;transition:border var(--transition);
+}
+#search-box:focus{border-color:var(--accent)}
+#msg-list{flex:1;overflow-y:auto;padding:4px 0}
+.msg-row{
+  display:flex;flex-direction:column;gap:3px;
+  padding:10px 14px;cursor:pointer;
+  border-bottom:1px solid rgba(48,54,61,0.5);
+  transition:background var(--transition);position:relative;
+}
+.msg-row:hover{background:var(--surface2)}
+.msg-row.selected{background:rgba(88,166,255,0.08);border-left:3px solid var(--accent)}
+.msg-row-top{display:flex;align-items:center;gap:6px}
+.msg-row-from{font-weight:600;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg-row-time{font-size:11px;color:var(--muted);flex-shrink:0}
+.msg-row-topic{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg-row-bottom{display:flex;align-items:center;gap:5px}
+#empty-state{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:var(--muted);gap:8px;font-size:13px;
+}
+#empty-state .empty-icon{font-size:36px;opacity:0.4}
+
+/* ── STATUS BADGE ────────────────────────────────────── */
+.badge{
+  font-size:10px;font-weight:600;padding:2px 7px;border-radius:10px;
+  text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;
+}
+.badge-new{background:rgba(56,139,253,0.15);color:var(--new)}
+.badge-processing{background:rgba(210,153,34,0.15);color:var(--processing)}
+.badge-replied{background:rgba(63,185,80,0.15);color:var(--replied)}
+.badge-closed{background:rgba(72,79,88,0.3);color:var(--closed)}
+.badge-failed{background:rgba(248,81,73,0.15);color:var(--failed)}
+.badge-read{background:rgba(139,148,158,0.15);color:var(--read)}
+
+/* ── DETAIL PANE ─────────────────────────────────────── */
+#detail-pane{
+  flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;
+}
+#no-select{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:var(--muted);gap:8px;font-size:13px;
+}
+#no-select .ns-icon{font-size:48px;opacity:0.25}
+#detail-content{display:none;flex-direction:column;height:100%;overflow:hidden}
+#detail-header{
+  padding:14px 20px 12px;border-bottom:1px solid var(--border);
+  display:flex;flex-direction:column;gap:6px;
+}
+#detail-topic{font-size:17px;font-weight:700;line-height:1.3}
+#detail-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#detail-meta .meta-pill{font-size:12px;color:var(--muted)}
+#detail-meta .arrow{color:var(--border)}
+#detail-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-top:4px}
+#detail-body{
+  flex:1;overflow-y:auto;padding:20px;
+}
+.md-body{line-height:1.7;color:var(--text)}
+.md-body h1{font-size:1.5em;margin:0.8em 0 0.4em;border-bottom:1px solid var(--border);padding-bottom:0.3em}
+.md-body h2{font-size:1.25em;margin:0.8em 0 0.3em}
+.md-body h3{font-size:1.1em;margin:0.6em 0 0.2em}
+.md-body p{margin:0.5em 0}
+.md-body code{background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:monospace;font-size:0.88em}
+.md-body pre{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:12px;overflow-x:auto;margin:0.7em 0}
+.md-body pre code{background:none;border:none;padding:0}
+.md-body blockquote{border-left:3px solid var(--accent);padding:4px 12px;margin:0.5em 0;color:var(--muted);background:rgba(88,166,255,0.05);border-radius:0 4px 4px 0}
+.md-body ul,.md-body ol{margin:0.4em 0 0.4em 1.4em}
+.md-body li{margin:0.2em 0}
+.md-body a{color:var(--accent);text-decoration:none}
+.md-body a:hover{text-decoration:underline}
+.md-body hr{border:none;border-top:1px solid var(--border);margin:1em 0}
+.md-body strong{font-weight:700}
+.md-body em{font-style:italic}
+.md-body table{width:100%;border-collapse:collapse;margin:0.7em 0;font-size:0.9em}
+.md-body th,.md-body td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+.md-body th{background:var(--surface2);font-weight:600}
+.attach-row{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;margin:4px 0}
+.attach-name{font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── REPLY BOX ───────────────────────────────────────── */
+#reply-box{
+  border-top:1px solid var(--border);padding:14px 20px;
+  display:flex;flex-direction:column;gap:8px;
+  background:var(--surface);
+}
+#reply-box label{font-size:12px;color:var(--muted);font-weight:600}
+#reply-textarea{
+  width:100%;min-height:80px;max-height:200px;resize:vertical;
+  background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+  color:var(--text);font-size:13px;padding:9px 11px;outline:none;
+  font-family:inherit;transition:border var(--transition);
+}
+#reply-textarea:focus{border-color:var(--accent)}
+#reply-row{display:flex;align-items:center;gap:8px}
+#reply-topic-input{
+  flex:1;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;color:var(--text);font-size:12px;outline:none;
+}
+#reply-topic-input:focus{border-color:var(--accent)}
+
+/* ── COMPOSE MODAL ───────────────────────────────────── */
+.modal-overlay{
+  display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);
+  z-index:200;align-items:center;justify-content:center;
+}
+.modal-overlay.open{display:flex}
+.modal{
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  width:min(560px, 95vw);max-height:90vh;overflow:auto;padding:24px;
+  display:flex;flex-direction:column;gap:16px;
+  box-shadow:0 20px 60px rgba(0,0,0,0.5);
+}
+.modal h3{font-size:16px;font-weight:700}
+.modal label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px}
+.modal input,.modal textarea,.modal select{
+  width:100%;padding:8px 11px;background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;color:var(--text);font-size:13px;outline:none;
+  transition:border var(--transition);font-family:inherit;
+}
+.modal input:focus,.modal textarea:focus,.modal select:focus{border-color:var(--accent)}
+.modal textarea{min-height:120px;resize:vertical}
+.modal-row{display:flex;gap:10px}
+.modal-row>div{flex:1}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+.form-group{display:flex;flex-direction:column;gap:4px}
+
+/* ── TOAST ───────────────────────────────────────────── */
+#toast-container{position:fixed;bottom:20px;right:20px;z-index:300;display:flex;flex-direction:column;gap:6px}
+.toast{
+  padding:10px 16px;background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;font-size:13px;box-shadow:0 4px 20px rgba(0,0,0,0.4);
+  animation:slide-in 0.2s ease;max-width:300px;
+}
+.toast.success{border-color:var(--replied);color:var(--replied)}
+.toast.error{border-color:var(--failed);color:var(--failed)}
+.toast.info{border-color:var(--accent);color:var(--accent)}
+@keyframes slide-in{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+
+/* ── LOADER ──────────────────────────────────────────── */
+.spinner{
+  width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);
+  border-radius:50%;animation:spin 0.7s linear infinite;display:inline-block;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── SCROLLBAR ───────────────────────────────────────── */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+
+/* ── MOBILE ──────────────────────────────────────────── */
+@media(max-width:700px){
+  #sidebar{display:none}
+  #msg-list-pane{width:100%;border-right:none}
+  #detail-pane{display:none;position:fixed;inset:0;z-index:50;background:var(--bg);padding-top:52px}
+  #detail-pane.mobile-open{display:flex}
+  .back-btn{display:inline-flex!important}
+}
+.back-btn{display:none;align-items:center;gap:5px;background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0 0 4px}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="brand">
+    <div class="dot"></div>
+    aimail
+  </div>
+  <div class="hright">
+    <div id="conn-indicator" title="SSE connection status"></div>
+    <span class="port-badge" id="port-badge">:PORT</span>
+    <button class="btn primary" onclick="openCompose()">✉ Compose</button>
+  </div>
+</header>
+
+<!-- APP BODY -->
+<div id="app">
+
+  <!-- SIDEBAR -->
+  <nav id="sidebar">
+    <div class="sidebar-section">Mailbox</div>
+    <div class="nav-tabs">
+      <div class="nav-tab active" data-tab="inbox" onclick="switchTab(this,'inbox')">
+        📥 Inbox <span class="tab-count" id="cnt-inbox">0</span>
+      </div>
+      <div class="nav-tab" data-tab="sent" onclick="switchTab(this,'sent')">
+        📤 Sent <span class="tab-count" id="cnt-sent">0</span>
+      </div>
+      <div class="nav-tab" data-tab="all" onclick="switchTab(this,'all')">
+        📋 All <span class="tab-count" id="cnt-all">0</span>
+      </div>
+    </div>
+    <div id="sidebar-divider"></div>
+    <div class="sidebar-section">Agents</div>
+    <div class="agent-chips" id="agent-chips"></div>
+  </nav>
+
+  <!-- MAIN -->
+  <div id="main">
+    <!-- MESSAGE LIST -->
+    <div id="msg-list-pane">
+      <div id="list-header">
+        <h2 id="list-title">Inbox</h2>
+      </div>
+      <div style="padding:8px 10px;border-bottom:1px solid var(--border)">
+        <input type="search" id="search-box" placeholder="Search messages…" oninput="onSearch(this.value)"/>
+      </div>
+      <div id="msg-list">
+        <div id="empty-state">
+          <div class="empty-icon">📭</div>
+          <span>No messages</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- DETAIL PANE -->
+    <div id="detail-pane">
+      <div id="no-select">
+        <div class="ns-icon">✉️</div>
+        <span>Select a message to view</span>
+      </div>
+      <div id="detail-content">
+        <div id="detail-header">
+          <button class="back-btn" onclick="closeMobileDetail()">← Back</button>
+          <div id="detail-topic">Topic</div>
+          <div id="detail-meta">
+            <span class="meta-pill" id="dmeta-from"></span>
+            <span class="arrow">→</span>
+            <span class="meta-pill" id="dmeta-to"></span>
+            <span id="dmeta-badge"></span>
+            <span class="meta-pill" id="dmeta-time" style="margin-left:auto"></span>
+          </div>
+          <div id="detail-actions"></div>
+        </div>
+        <div id="detail-body" class="md-body"></div>
+        <div id="reply-box">
+          <label>Quick Reply</label>
+          <div id="reply-row">
+            <input id="reply-topic-input" type="text" placeholder="Topic (auto-filled)"/>
+            <button class="btn sm" onclick="submitReply()">Send Reply</button>
+            <button class="btn sm danger" onclick="closeThread()">Close</button>
+          </div>
+          <textarea id="reply-textarea" placeholder="Write your reply in markdown…"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- COMPOSE MODAL -->
+<div class="modal-overlay" id="compose-modal">
+  <div class="modal">
+    <h3>✉ New Message</h3>
+    <div class="modal-row">
+      <div class="form-group">
+        <label>From</label>
+        <select id="compose-from"></select>
+      </div>
+      <div class="form-group">
+        <label>To</label>
+        <select id="compose-to"></select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Topic <small style="color:var(--muted)">(alphanumeric + underscore)</small></label>
+      <input type="text" id="compose-topic" placeholder="e.g. task_request"/>
+    </div>
+    <div class="form-group">
+      <label>Body (Markdown)</label>
+      <textarea id="compose-body" placeholder="Write your message…"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeCompose()">Cancel</button>
+      <button class="btn primary" onclick="submitCompose()">Send Message</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST CONTAINER -->
+<div id="toast-container"></div>
+
+<script>
+// ════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════
+let allMessages = [];
+let allUsers = [];
+let currentTab = 'inbox';
+let currentAgent = null;
+let selectedId = null;
+let searchQuery = '';
+let selfUser = null;  // best-guess "me" for reply defaults
+
+// ════════════════════════════════════════════════════════
+//  BOOTSTRAP
+// ════════════════════════════════════════════════════════
+document.getElementById('port-badge').textContent = ':' + location.port;
+
+async function init() {
+  await Promise.all([loadUsers(), loadMessages()]);
+  renderSidebar();
+  renderList();
+  connectSSE();
+}
+init();
+
+// ════════════════════════════════════════════════════════
+//  DATA FETCHING
+// ════════════════════════════════════════════════════════
+async function loadMessages(params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  const url = '/api/messages' + (qs ? '?' + qs : '');
+  const r = await fetch(url);
+  if (!r.ok) return;
+  allMessages = await r.json();
+}
+
+async function loadUsers() {
+  const r = await fetch('/api/users');
+  if (!r.ok) return;
+  allUsers = await r.json();
+  if (allUsers.length) selfUser = allUsers[0].user_id;
+}
+
+async function loadDetail(id) {
+  const r = await fetch('/api/messages/' + id);
+  if (!r.ok) { toast('Failed to load message', 'error'); return null; }
+  return r.json();
+}
+
+// ════════════════════════════════════════════════════════
+//  SSE  (live refresh)
+// ════════════════════════════════════════════════════════
+let sseRetryMs = 2000;
+function connectSSE() {
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { setConn(true); sseRetryMs = 2000; };
+  es.onmessage = async (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'refresh') {
+        await loadMessages();
+        renderList();
+        if (selectedId) await refreshDetail(selectedId);
+      }
+    } catch {}
+  };
+  es.onerror = () => {
+    setConn(false);
+    es.close();
+    setTimeout(connectSSE, sseRetryMs);
+    sseRetryMs = Math.min(sseRetryMs * 2, 30000);
+  };
+}
+function setConn(ok) {
+  document.getElementById('conn-indicator').className = 'ok'.repeat(ok) || '';
+  if (ok) document.getElementById('conn-indicator').classList.add('ok');
+  else document.getElementById('conn-indicator').classList.remove('ok');
+}
+
+// ════════════════════════════════════════════════════════
+//  FILTERING
+// ════════════════════════════════════════════════════════
+function getFiltered() {
+  let msgs = allMessages;
+  if (currentAgent) {
+    msgs = msgs.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
+  }
+  if (currentTab === 'inbox') {
+    msgs = msgs.filter(m => m.receiver_id === selfUser || currentAgent === null
+      ? (selfUser ? m.receiver_id === selfUser : true)
+      : msgs);
+    // If no selfUser context, inbox = all with status new/processing
+    if (!selfUser) msgs = allMessages.filter(m => ['new','processing'].includes(m.status));
+    else msgs = allMessages.filter(m => m.receiver_id === selfUser);
+    if (currentAgent) msgs = msgs.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
+  } else if (currentTab === 'sent') {
+    if (selfUser) msgs = allMessages.filter(m => m.sender_id === selfUser);
+    else msgs = allMessages.filter(m => m.status === 'replied');
+    if (currentAgent) msgs = msgs.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
+  } else {
+    msgs = allMessages;
+    if (currentAgent) msgs = msgs.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
+  }
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    msgs = msgs.filter(m =>
+      m.topic.toLowerCase().includes(q) ||
+      m.sender_id.toLowerCase().includes(q) ||
+      m.receiver_id.toLowerCase().includes(q)
+    );
+  }
+  return msgs;
+}
+
+// ════════════════════════════════════════════════════════
+//  RENDER — SIDEBAR
+// ════════════════════════════════════════════════════════
+function renderSidebar() {
+  // Update counts
+  document.getElementById('cnt-inbox').textContent =
+    selfUser ? allMessages.filter(m => m.receiver_id === selfUser).length : allMessages.filter(m => ['new','processing'].includes(m.status)).length;
+  document.getElementById('cnt-sent').textContent =
+    selfUser ? allMessages.filter(m => m.sender_id === selfUser).length : 0;
+  document.getElementById('cnt-all').textContent = allMessages.length;
+
+  // Agent chips
+  const agentSet = new Set();
+  allUsers.forEach(u => agentSet.add(u.user_id));
+  allMessages.forEach(m => { agentSet.add(m.sender_id); agentSet.add(m.receiver_id); });
+
+  const container = document.getElementById('agent-chips');
+  container.innerHTML = '';
+
+  // "All agents" chip
+  const allChip = document.createElement('div');
+  allChip.className = 'agent-chip' + (currentAgent === null ? ' active' : '');
+  allChip.innerHTML = '<div class="agent-avatar" style="background:var(--border)">★</div> All agents';
+  allChip.onclick = () => { currentAgent = null; renderAgentChips(); renderList(); };
+  container.appendChild(allChip);
+
+  Array.from(agentSet).sort().forEach(uid => {
+    const userInfo = allUsers.find(u => u.user_id === uid);
+    const chip = document.createElement('div');
+    chip.className = 'agent-chip' + (currentAgent === uid ? ' active' : '');
+    const initials = uid.slice(0,2).toUpperCase();
+    const hue = [...uid].reduce((a,c) => a + c.charCodeAt(0), 0) % 360;
+    chip.innerHTML = `<div class="agent-avatar" style="background:hsl(${hue},45%,30%)">${initials}</div> ${uid}`;
+    chip.title = userInfo ? userInfo.description : uid;
+    chip.onclick = () => { currentAgent = uid; renderAgentChips(); renderList(); };
+    container.appendChild(chip);
+  });
+
+  // Update selfUser if we can detect "kuro" or "human" type
+  const human = allUsers.find(u => u.client_type === 'human');
+  if (human) selfUser = human.user_id;
+}
+
+function renderAgentChips() {
+  document.querySelectorAll('.agent-chip').forEach((el, i) => {
+    if (i === 0) el.className = 'agent-chip' + (currentAgent === null ? ' active' : '');
+    else {
+      const uid = el.querySelector('.agent-avatar').nextSibling.textContent.trim();
+      el.className = 'agent-chip' + (currentAgent === uid ? ' active' : '');
+    }
+  });
+}
+
+// ════════════════════════════════════════════════════════
+//  RENDER — MESSAGE LIST
+// ════════════════════════════════════════════════════════
+function renderList() {
+  renderSidebar();
+  const msgs = getFiltered();
+  const container = document.getElementById('msg-list');
+  const empty = document.getElementById('empty-state');
+
+  if (!msgs.length) {
+    container.innerHTML = '';
+    container.appendChild(empty);
+    empty.style.display = 'flex';
+    return;
+  }
+  empty.style.display = 'none';
+
+  container.innerHTML = '';
+  msgs.slice().reverse().forEach(m => {
+    const row = document.createElement('div');
+    row.className = 'msg-row' + (m.id === selectedId ? ' selected' : '');
+    row.dataset.id = m.id;
+
+    const ts = formatTime(m.message_timestamp);
+    row.innerHTML = `
+      <div class="msg-row-top">
+        <span class="msg-row-from">${esc(m.sender_id)} → ${esc(m.receiver_id)}</span>
+        <span class="msg-row-time">${ts}</span>
+      </div>
+      <div class="msg-row-bottom">
+        <span class="msg-row-topic">${esc(m.topic)}</span>
+        ${badgeHtml(m.status)}
+        ${m.attachment_path ? '<span style="font-size:10px;color:var(--muted)">📎</span>' : ''}
+      </div>
+    `;
+    row.onclick = () => selectMessage(m.id);
+    container.appendChild(row);
+  });
+}
+
+// ════════════════════════════════════════════════════════
+//  RENDER — DETAIL
+// ════════════════════════════════════════════════════════
+async function selectMessage(id) {
+  selectedId = id;
+  document.querySelectorAll('.msg-row').forEach(r => {
+    r.classList.toggle('selected', +r.dataset.id === id);
+  });
+
+  document.getElementById('no-select').style.display = 'none';
+  document.getElementById('detail-content').style.display = 'flex';
+
+  // Mobile
+  document.getElementById('detail-pane').classList.add('mobile-open');
+
+  const data = await loadDetail(id);
+  if (!data) return;
+  renderDetail(data);
+}
+
+async function refreshDetail(id) {
+  if (selectedId !== id) return;
+  const data = await loadDetail(id);
+  if (data) renderDetail(data);
+}
+
+function renderDetail(data) {
+  document.getElementById('detail-topic').textContent = data.topic;
+  document.getElementById('dmeta-from').textContent = data.sender_id;
+  document.getElementById('dmeta-to').textContent = data.receiver_id;
+  document.getElementById('dmeta-badge').innerHTML = badgeHtml(data.status);
+  document.getElementById('dmeta-time').textContent = formatTime(data.message_timestamp);
+
+  // Actions
+  const actions = document.getElementById('detail-actions');
+  actions.innerHTML = '';
+  if (data.status !== 'closed') {
+    if (data.status === 'new' || data.status === 'processing') {
+      addAction(actions, '✓ Mark Read', () => markMsg(data.id, 'read'));
+    }
+    addAction(actions, '🔒 Close', () => markMsg(data.id, 'closed'));
+  }
+  if (data.status !== 'replied') {
+    addAction(actions, '↩ Mark Replied', () => markMsg(data.id, 'replied'));
+  }
+
+  // Body
+  const body = document.getElementById('detail-body');
+  body.innerHTML = '';
+
+  if (data.attachment_path) {
+    const fname = data.attachment_path.split('/').pop();
+    const att = document.createElement('div');
+    att.className = 'attach-row';
+    att.innerHTML = `
+      <span style="font-size:18px">📎</span>
+      <span class="attach-name">${esc(fname)}</span>
+      <a class="btn sm" href="/api/attachments/${data.id}" download="${esc(fname)}">Download</a>
+    `;
+    body.appendChild(att);
+  }
+
+  const mdDiv = document.createElement('div');
+  mdDiv.className = 'md-body';
+  mdDiv.innerHTML = renderMarkdown(data.body || '');
+  body.appendChild(mdDiv);
+
+  // Pre-fill reply
+  const replyTopic = data.topic.endsWith('_reply') ? data.topic : data.topic + '_reply';
+  document.getElementById('reply-topic-input').value = replyTopic;
+  document.getElementById('reply-textarea').value = '';
+
+  // Store for reply
+  document.getElementById('reply-box').dataset.fromId = data.receiver_id;
+  document.getElementById('reply-box').dataset.toId = data.sender_id;
+  document.getElementById('reply-box').dataset.msgId = data.id;
+}
+
+function addAction(container, label, fn) {
+  const b = document.createElement('button');
+  b.className = 'btn sm';
+  b.textContent = label;
+  b.onclick = fn;
+  container.appendChild(b);
+}
+
+// ════════════════════════════════════════════════════════
+//  ACTIONS
+// ════════════════════════════════════════════════════════
+async function markMsg(id, status) {
+  const r = await fetch('/api/messages/' + id + '/mark', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status})
+  });
+  if (r.ok) {
+    toast('Status → ' + status, 'success');
+    await loadMessages();
+    renderList();
+    await refreshDetail(id);
+  } else {
+    toast('Failed to update status', 'error');
+  }
+}
+
+async function closeThread() {
+  const box = document.getElementById('reply-box');
+  const id = +box.dataset.msgId;
+  if (id) await markMsg(id, 'closed');
+}
+
+async function submitReply() {
+  const box = document.getElementById('reply-box');
+  const from = box.dataset.fromId;
+  const to = box.dataset.toId;
+  const topic = document.getElementById('reply-topic-input').value.trim();
+  const content = document.getElementById('reply-textarea').value.trim();
+  if (!content) { toast('Reply body is empty', 'error'); return; }
+  if (!topic) { toast('Topic is required', 'error'); return; }
+
+  const r = await fetch('/api/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({from, to, topic, content})
+  });
+  if (r.ok) {
+    toast('Reply sent!', 'success');
+    document.getElementById('reply-textarea').value = '';
+    // Mark original as replied
+    const msgId = +box.dataset.msgId;
+    if (msgId) await markMsg(msgId, 'replied');
+    await loadMessages();
+    renderList();
+  } else {
+    const err = await r.json().catch(() => ({}));
+    toast('Send failed: ' + (err.error || 'unknown'), 'error');
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  COMPOSE
+// ════════════════════════════════════════════════════════
+function openCompose() {
+  // Populate selects
+  const selFrom = document.getElementById('compose-from');
+  const selTo = document.getElementById('compose-to');
+  selFrom.innerHTML = '';
+  selTo.innerHTML = '';
+  const ids = Array.from(new Set([...allUsers.map(u => u.user_id),
+    ...allMessages.flatMap(m => [m.sender_id, m.receiver_id])])).sort();
+  ids.forEach(uid => {
+    selFrom.add(new Option(uid, uid));
+    selTo.add(new Option(uid, uid));
+  });
+  if (selfUser) selFrom.value = selfUser;
+  document.getElementById('compose-modal').classList.add('open');
+}
+
+function closeCompose() {
+  document.getElementById('compose-modal').classList.remove('open');
+}
+
+async function submitCompose() {
+  const from = document.getElementById('compose-from').value;
+  const to = document.getElementById('compose-to').value;
+  const topic = document.getElementById('compose-topic').value.trim();
+  const content = document.getElementById('compose-body').value.trim();
+  if (!from || !to || !topic || !content) { toast('All fields are required', 'error'); return; }
+  if (!/^[A-Za-z0-9_]+$/.test(topic)) { toast('Topic: only letters, digits, underscores', 'error'); return; }
+
+  const r = await fetch('/api/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({from, to, topic, content})
+  });
+  if (r.ok) {
+    toast('Message sent!', 'success');
+    closeCompose();
+    document.getElementById('compose-topic').value = '';
+    document.getElementById('compose-body').value = '';
+    await loadMessages();
+    renderList();
+  } else {
+    const err = await r.json().catch(() => ({}));
+    toast('Send failed: ' + (err.error || 'unknown'), 'error');
+  }
+}
+
+// Close modal on overlay click
+document.getElementById('compose-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeCompose();
+});
+
+// ════════════════════════════════════════════════════════
+//  UI HELPERS
+// ════════════════════════════════════════════════════════
+function switchTab(el, tab) {
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  currentTab = tab;
+  const titles = {inbox:'Inbox', sent:'Sent', all:'All Messages'};
+  document.getElementById('list-title').textContent = titles[tab] || tab;
+  renderList();
+}
+
+function onSearch(val) {
+  searchQuery = val.trim();
+  renderList();
+}
+
+function closeMobileDetail() {
+  document.getElementById('detail-pane').classList.remove('mobile-open');
+  selectedId = null;
+}
+
+function badgeHtml(status) {
+  const cls = {new:'new',processing:'processing',replied:'replied',closed:'closed',failed:'failed',read:'read'}[status] || 'read';
+  return `<span class="badge badge-${cls}">${status}</span>`;
+}
+
+function formatTime(ts) {
+  if (!ts) return '';
+  // Format: 20261103_181500 or ISO
+  if (/^\d{8}_\d{6}$/.test(ts)) {
+    return ts.slice(4,6)+'-'+ts.slice(6,8)+' '+ts.slice(9,11)+':'+ts.slice(11,13);
+  }
+  // ISO-like
+  try { return ts.slice(5,16).replace('T',' '); } catch { return ts; }
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ════════════════════════════════════════════════════════
+//  MINIMAL MARKDOWN RENDERER
+// ════════════════════════════════════════════════════════
+function renderMarkdown(md) {
+  if (!md) return '';
+  const lines = md.split('\n');
+  let html = '';
+  let inCode = false, codeLang = '', codeLines = [];
+  let inUl = false, inOl = false;
+
+  function flushList() {
+    if (inUl) { html += '</ul>'; inUl = false; }
+    if (inOl) { html += '</ol>'; inOl = false; }
+  }
+
+  function inlineProcess(line) {
+    // Escape HTML first
+    line = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Bold + italic
+    line = line.replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>');
+    line = line.replace(/___(.+?)___/g,'<strong><em>$1</em></strong>');
+    line = line.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+    line = line.replace(/__(.+?)__/g,'<strong>$1</strong>');
+    line = line.replace(/\*(.+?)\*/g,'<em>$1</em>');
+    line = line.replace(/_(.+?)_/g,'<em>$1</em>');
+    // Inline code
+    line = line.replace(/`([^`]+)`/g,'<code>$1</code>');
+    // Links
+    line = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // Strikethrough
+    line = line.replace(/~~(.+?)~~/g,'<del>$1</del>');
+    return line;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+
+    // Fenced code blocks
+    if (/^```/.test(raw)) {
+      if (!inCode) {
+        flushList();
+        codeLang = raw.slice(3).trim();
+        codeLines = [];
+        inCode = true;
+      } else {
+        const escaped = codeLines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        html += `<pre><code class="lang-${esc(codeLang)}">${escaped}</code></pre>`;
+        inCode = false;
+      }
+      continue;
+    }
+    if (inCode) { codeLines.push(raw); continue; }
+
+    // HR
+    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(raw)) { flushList(); html += '<hr>'; continue; }
+
+    // Headings
+    const hm = raw.match(/^(#{1,6})\s+(.*)/);
+    if (hm) { flushList(); const lvl=hm[1].length; html += `<h${lvl}>${inlineProcess(hm[2])}</h${lvl}>`; continue; }
+
+    // Blockquote
+    if (/^>/.test(raw)) {
+      flushList();
+      const bq = raw.replace(/^>\s?/, '');
+      html += `<blockquote>${inlineProcess(bq)}</blockquote>`;
+      continue;
+    }
+
+    // Ordered list
+    if (/^\d+\.\s/.test(raw)) {
+      if (inUl) { html += '</ul>'; inUl = false; }
+      if (!inOl) { html += '<ol>'; inOl = true; }
+      html += `<li>${inlineProcess(raw.replace(/^\d+\.\s/, ''))}</li>`;
+      continue;
+    }
+
+    // Unordered list
+    if (/^[-*+]\s/.test(raw)) {
+      if (inOl) { html += '</ol>'; inOl = false; }
+      if (!inUl) { html += '<ul>'; inUl = true; }
+      html += `<li>${inlineProcess(raw.replace(/^[-*+]\s/, ''))}</li>`;
+      continue;
+    }
+
+    // Blank line
+    if (!raw.trim()) { flushList(); html += ''; continue; }
+
+    // Paragraph
+    flushList();
+    html += `<p>${inlineProcess(raw)}</p>`;
+  }
+
+  flushList();
+  if (inCode && codeLines.length) {
+    const escaped = codeLines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    html += `<pre><code>${escaped}</code></pre>`;
+  }
+  return html;
+}
+
+// ════════════════════════════════════════════════════════
+//  TOAST
+// ════════════════════════════════════════════════════════
+function toast(msg, type = 'info', ms = 3000) {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+</script>
+</body>
+</html>"""
+
+    # -------------------------------------------------------------------------
+    # HTTP  REQUEST HANDLER
+    # -------------------------------------------------------------------------
+    class AimailHandler(BaseHTTPRequestHandler):
+        """Single handler for the aimail web UI + JSON API."""
+
+        # -- SSE state (class-level) ------------------------------------------
+        _sse_lock = threading.Lock()
+        _last_row_count = -1
+        _last_updated_at = None
+
+        def log_message(self, fmt, *a):
+            # Minimal console output
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            print(f"  [{ts}] {fmt % a}")
+
+        # ── routing ──────────────────────────────────────────────────────────
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            qs = parse_qs(parsed.query)
+
+            if path == "/":
+                self._send_html(HTML_TEMPLATE.encode())
+            elif path == "/api/messages":
+                self._api_messages(qs)
+            elif re.match(r"^/api/messages/\d+$", path):
+                mid = int(path.split("/")[-1])
+                self._api_message_detail(mid)
+            elif path == "/api/users":
+                self._api_users()
+            elif path == "/api/stream":
+                self._api_stream()
+            elif re.match(r"^/api/attachments/\d+$", path):
+                mid = int(path.split("/")[-1])
+                self._api_attachment(mid)
+            else:
+                self._send_json({"error": "not found"}, 404)
+
+        def do_HEAD(self):
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            if path == "/":
+                data = HTML_TEMPLATE.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+
+        def do_POST(self):
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/")
+
+            if re.match(r"^/api/messages/\d+/mark$", path):
+                mid = int(path.split("/")[-2])
+                self._api_mark(mid)
+            elif path == "/api/send":
+                self._api_send()
+            else:
+                self._send_json({"error": "not found"}, 404)
+
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
+        # ── helpers ───────────────────────────────────────────────────────────
+        def _read_body(self):
+            length = int(self.headers.get("Content-Length", 0))
+            return self.rfile.read(length)
+
+        def _send_html(self, data: bytes, code: int = 200):
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _send_json(self, obj, code: int = 200):
+            data = json.dumps(obj, default=str).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _db(self):
+            conn = get_connection(messages_dir)
+            return conn
+
+        # ── API: GET /api/messages ────────────────────────────────────────────
+        def _api_messages(self, qs):
+            conn = self._db()
+            cur = conn.cursor()
+            query = "SELECT * FROM messages WHERE 1=1"
+            params = []
+            status = (qs.get("status") or [None])[0]
+            to = (qs.get("to") or [None])[0]
+            frm = (qs.get("from") or [None])[0]
+            limit = (qs.get("limit") or [None])[0]
+
+            if status and status != "all":
+                query += " AND status = ?"
+                params.append(status)
+            if to:
+                query += " AND receiver_id = ?"
+                params.append(to)
+            if frm:
+                query += " AND sender_id = ?"
+                params.append(frm)
+            query += " ORDER BY message_timestamp ASC"
+            if limit:
+                try:
+                    query += f" LIMIT {int(limit)}"
+                except ValueError:
+                    pass
+
+            cur.execute(query, params)
+            rows = [dict(r) for r in cur.fetchall()]
+            conn.close()
+            self._send_json(rows)
+
+        # ── API: GET /api/messages/<id> ───────────────────────────────────────
+        def _api_message_detail(self, mid):
+            conn = self._db()
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM messages WHERE id = ?", (mid,))
+            row = cur.fetchone()
+            conn.close()
+            if not row:
+                self._send_json({"error": "not found"}, 404)
+                return
+            data = dict(row)
+            # Attach body text
+            md_path = messages_dir / row["md_file_path"]
+            if not md_path.exists():
+                md_path = messages_dir / MARKDOWN_SUBDIR / Path(row["md_file_path"]).name
+            try:
+                data["body"] = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+            except Exception:
+                data["body"] = ""
+            self._send_json(data)
+
+        # ── API: GET /api/users ───────────────────────────────────────────────
+        def _api_users(self):
+            conn = self._db()
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM users ORDER BY user_id ASC")
+            rows = [dict(r) for r in cur.fetchall()]
+            conn.close()
+            self._send_json(rows)
+
+        # ── API: POST /api/messages/<id>/mark ─────────────────────────────────
+        def _api_mark(self, mid):
+            try:
+                body = json.loads(self._read_body())
+                new_status = body.get("status", "")
+            except Exception:
+                self._send_json({"error": "invalid json"}, 400)
+                return
+            valid = ("new", "processing", "read", "replied", "closed", "failed")
+            if new_status not in valid:
+                self._send_json({"error": f"status must be one of {valid}"}, 400)
+                return
+            conn = self._db()
+            cur = conn.cursor()
+            cur.execute("UPDATE messages SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (new_status, mid))
+            if cur.rowcount == 0:
+                conn.close()
+                self._send_json({"error": "not found"}, 404)
+                return
+            conn.commit()
+            conn.close()
+            self._send_json({"ok": True, "id": mid, "status": new_status})
+
+        # ── API: POST /api/send ───────────────────────────────────────────────
+        def _api_send(self):
+            try:
+                body = json.loads(self._read_body())
+            except Exception:
+                self._send_json({"error": "invalid json"}, 400)
+                return
+            frm = str(body.get("from", "")).strip()
+            to = str(body.get("to", "")).strip()
+            topic = str(body.get("topic", "")).strip()
+            content = str(body.get("content", "")).strip()
+
+            if not all([frm, to, topic, content]):
+                self._send_json({"error": "from, to, topic, content are required"}, 400)
+                return
+            if not re.match(r"^[A-Za-z0-9_-]+$", topic):
+                self._send_json({"error": "topic must be alphanumeric+underscore"}, 400)
+                return
+
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            md_dir = messages_dir / MARKDOWN_SUBDIR
+            md_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{frm}-{to}-{topic}-{ts}.md"
+            md_path = md_dir / filename
+            db_md_path = f"{MARKDOWN_SUBDIR}/{filename}"
+
+            try:
+                md_path.write_text(content, encoding="utf-8")
+            except Exception as e:
+                self._send_json({"error": f"write failed: {e}"}, 500)
+                return
+
+            conn = self._db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO messages (sender_id, receiver_id, topic, message_timestamp, md_file_path, status) VALUES (?,?,?,?,?,'new')",
+                (frm, to, topic, ts, db_md_path),
+            )
+            new_id = cur.lastrowid
+            conn.commit()
+            conn.close()
+
+            # Trigger wakeup in background thread
+            def _wake():
+                try:
+                    trigger_wakeup(to, frm, topic, db_md_path, messages_dir)
+                except Exception:
+                    pass
+            threading.Thread(target=_wake, daemon=True).start()
+
+            self._send_json({"ok": True, "id": new_id})
+
+        # ── API: GET /api/attachments/<id> ────────────────────────────────────
+        def _api_attachment(self, mid):
+            conn = self._db()
+            cur = conn.cursor()
+            cur.execute("SELECT attachment_path FROM messages WHERE id = ?", (mid,))
+            row = cur.fetchone()
+            conn.close()
+            if not row or not row["attachment_path"]:
+                self._send_json({"error": "no attachment"}, 404)
+                return
+            att_path = messages_dir / row["attachment_path"]
+            if not att_path.exists():
+                att_path = messages_dir / ATTACHMENTS_SUBDIR / Path(row["attachment_path"]).name
+            if not att_path.exists():
+                self._send_json({"error": "file not found"}, 404)
+                return
+            data = att_path.read_bytes()
+            fname = att_path.name
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        # ── API: GET /api/stream  (SSE) ───────────────────────────────────────
+        def _api_stream(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            last_count = -1
+            last_upd = None
+
+            def _db_state():
+                try:
+                    conn = self._db()
+                    cur = conn.cursor()
+                    cur.execute("SELECT COUNT(*), MAX(updated_at) FROM messages")
+                    row = cur.fetchone()
+                    conn.close()
+                    return row[0], row[1]
+                except Exception:
+                    return -1, None
+
+            try:
+                while True:
+                    count, upd = _db_state()
+                    if count != last_count or upd != last_upd:
+                        if last_count != -1 or last_upd is not None:
+                            msg = b'data: {"type":"refresh"}\n\n'
+                        else:
+                            msg = b'data: {"type":"connected"}\n\n'
+                        self.wfile.write(msg)
+                        self.wfile.flush()
+                        last_count = count
+                        last_upd = upd
+                    time.sleep(2)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:
+                pass
+
+    # -------------------------------------------------------------------------
+    # START SERVER
+    # -------------------------------------------------------------------------
+    # Ensure DB is initialised
+    init_db(get_db_path(messages_dir))
+
+    # Check port availability
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex((host, port)) == 0:
+            print(f"Error: Port {port} is already in use. Try --port <other>.", file=sys.stderr)
+            sys.exit(1)
+
+    server = ThreadingHTTPServer((host, port), AimailHandler)
+    url = f"http://{host}:{port}"
+    print(f"  aimail web UI  →  {url}")
+    print(f"  Messages dir   →  {messages_dir}")
+    print(f"  Press Ctrl+C to stop.\n")
+
+    if getattr(args, "open", False):
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n  Shutting down aimail server.")
+        server.shutdown()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Message Control CLI for agent communication.")
     parser.add_argument("--dir", default=str(DEFAULT_MESSAGES_DIR), help="Directory containing messages")
@@ -1193,6 +2471,17 @@ def main():
     p_users.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
     p_users.add_argument("-v", "--verbose", action="store_true", help="Show full IDs and detailed properties")
 
+    # serve
+    p_serve = subparsers.add_parser("serve", help="Start the aimail web UI dashboard")
+    p_serve.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
+    p_serve.add_argument("--host", default="127.0.0.1", help="Host address to bind to (default: 127.0.0.1)")
+    p_serve.add_argument("--open", action="store_true", help="Automatically open browser on launch")
+
+    # ui (shortcut to serve --open)
+    p_ui = subparsers.add_parser("ui", help="Launch the aimail web dashboard and open it in the browser")
+    p_ui.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
+    p_ui.add_argument("--host", default="127.0.0.1", help="Host address to bind to (default: 127.0.0.1)")
+
     args = parser.parse_args()
 
     if args.command == "sync":
@@ -1221,6 +2510,10 @@ def main():
         cmd_user(args)
     elif args.command == "users":
         cmd_users(args)
+    elif args.command in ("serve", "ui"):
+        if args.command == "ui":
+            args.open = True
+        cmd_serve(args)
 
 
 if __name__ == "__main__":
