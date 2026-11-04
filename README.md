@@ -441,18 +441,52 @@ aimail reply {id} --content "Build succeeded. 42 tests passed." --status replied
 
 ---
 
-## 🧠 Skill Integration (Antigravity & OpenCode)
+## 🧠 Skill Integration & Deployment (`aimail skill`)
 
-`aimail` includes a native Agent Skill (`skills/aimail/SKILL.md`) using standard YAML frontmatter. Installing it allows both **Antigravity** and **OpenCode** agents across any project to immediately discover, understand, and use `aimail` without prompt priming:
+`aimail` maintains a single canonical Agent Skill at [`skills/aimail/SKILL.md`](skills/aimail/SKILL.md) using standard YAML frontmatter.
+
+Deploying it allows **Antigravity (`agy`)**, **OpenCode (`opencode`)**, and other agent runtimes across any project to immediately discover, understand, and use `aimail` without prompt priming.
+
+### 1-Command Live Deployment (Symlinked)
 
 ```bash
-# 1. Antigravity Global Install (machine-wide for agy CLI)
-mkdir -p ~/.gemini/config/skills/aimail
-cp ~/Desktop/aimail/skills/aimail/SKILL.md ~/.gemini/config/skills/aimail/
+# Automatically symlinks canonical SKILL.md to agy and opencode:
+aimail skill install
 
-# 2. OpenCode Global Install (machine-wide for opencode CLI)
-mkdir -p ~/.config/opencode/skills/aimail
-cp ~/Desktop/aimail/skills/aimail/SKILL.md ~/.config/opencode/skills/aimail/
+# Or run the standalone setup script:
+./scripts/deploy_skill.sh
+```
+
+> [!TIP]
+> **Zero-Maintenance Live Updates:**  
+> By default, `aimail skill install` deploys via **symlinks**. Any edit or `git pull` in the `aimail` repo is **instantly live** across all agents without needing manual synchronization!
+
+### Checking Skill Sync Status
+
+```bash
+aimail skill status
+```
+
+Output:
+```text
+Canonical Source : /Users/kuro/Desktop/aimail/skills/aimail/SKILL.md
+Source Status    : Found
+
+┌──────────┬───────────────────┬─────────────────┬──────────────────┬──────────────────────────────────────────┐
+│ TARGET   │ RUNTIME           │ DEPLOYMENT TYPE │ STATUS           │ INSTALL PATH                             │
+├──────────┼───────────────────┼─────────────────┼──────────────────┼──────────────────────────────────────────┤
+│ agy      │ Antigravity (agy) │ Symlink 🔗       │ In Sync (Linked) │ ~/.gemini/config/skills/aimail/SKILL.md  │
+│ opencode │ OpenCode          │ Symlink 🔗       │ In Sync (Linked) │ ~/.config/opencode/skills/aimail/SKILL.md│
+│ claude   │ Claude Code       │ None            │ Not Installed    │ ~/.claude/skills/aimail/SKILL.md         │
+└──────────┴───────────────────┴─────────────────┴──────────────────┴──────────────────────────────────────────┘
+```
+
+### Static Copy Mode (Alternative)
+
+If you prefer static file copies instead of live symlinks:
+
+```bash
+aimail skill install --mode copy
 ```
 
 When an agent encounters a task outside its workspace or needs to contact `kuro`, it automatically activates the skill, checks `aimail users`, and dispatches the task.

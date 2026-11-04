@@ -1261,6 +1261,163 @@ def cmd_users(args):
     cmd_user(args)
 
 
+def get_canonical_skill(messages_dir: Path) -> Path:
+    candidates = [
+        messages_dir / "skills" / "aimail" / "SKILL.md",
+        Path(__file__).resolve().parent / "skills" / "aimail" / "SKILL.md",
+        Path(__file__).resolve().parent / "SKILL.md",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p.resolve()
+    return (Path.home() / "Desktop" / "aimail" / "skills" / "aimail" / "SKILL.md").resolve()
+
+
+SKILL_TARGETS = {
+    "agy": {
+        "name": "Antigravity (agy)",
+        "path": Path.home() / ".gemini" / "config" / "skills" / "aimail" / "SKILL.md",
+        "desc": "Global skill for Google Antigravity agents"
+    },
+    "opencode": {
+        "name": "OpenCode",
+        "path": Path.home() / ".config" / "opencode" / "skills" / "aimail" / "SKILL.md",
+        "desc": "Global skill for OpenCode autonomous agents"
+    },
+    "claude": {
+        "name": "Claude Code",
+        "path": Path.home() / ".claude" / "skills" / "aimail" / "SKILL.md",
+        "desc": "Global skill for Anthropic Claude Code"
+    }
+}
+
+
+def cmd_skill(args):
+    import hashlib
+    import shutil
+
+    messages_dir = Path(args.dir).resolve()
+    canonical_skill = get_canonical_skill(messages_dir)
+    action = getattr(args, "skill_action", None) or "status"
+
+    if not canonical_skill.exists():
+        print(f"Error: Canonical SKILL.md not found at {canonical_skill}", file=sys.stderr)
+        sys.exit(1)
+
+    target_keys = getattr(args, "targets", None)
+    if target_keys:
+        chosen_targets = [k.strip().lower() for k in target_keys.split(",") if k.strip()]
+    else:
+        chosen_targets = ["agy", "opencode"]
+
+    if action == "install":
+        mode = getattr(args, "mode", "symlink")
+        print(f"Deploying aimail skill (source: {canonical_skill})")
+        print(f"Mode: {'🔗 Symlink (Live Auto-Updates)' if mode == 'symlink' else '📁 Static Copy'}\n")
+
+        for key in chosen_targets:
+            target_info = SKILL_TARGETS.get(key)
+            if not target_info:
+                print(f"  [!] Unknown target '{key}'. Supported: {', '.join(SKILL_TARGETS.keys())}")
+                continue
+
+            dst = target_info["path"]
+            dst.parent.mkdir(parents=True, exist_ok=True)
+
+            if dst.is_symlink() or dst.exists():
+                if dst.is_symlink():
+                    try:
+                        resolved = dst.resolve()
+                        if resolved == canonical_skill and mode == "symlink":
+                            print(f"  ✓ [{key}] Already symlinked to canonical SKILL.md ({dst})")
+                            continue
+                    except Exception:
+                        pass
+                try:
+                    dst.unlink()
+                except OSError as e:
+                    print(f"  ✗ [{key}] Failed to replace existing {dst}: {e}", file=sys.stderr)
+                    continue
+
+            try:
+                if mode == "symlink":
+                    dst.symlink_to(canonical_skill)
+                    print(f"  ✓ [{key}] Symlinked {dst} -> {canonical_skill}")
+                else:
+                    shutil.copy2(canonical_skill, dst)
+                    print(f"  ✓ [{key}] Copied to {dst}")
+            except Exception as e:
+                print(f"  ✗ [{key}] Deployment failed: {e}", file=sys.stderr)
+
+        print("\nTip: When installed with --mode symlink (default), any git pull or edit in this repo is instantly active across all agents.")
+
+    elif action == "status":
+        print(f"Canonical Source : {canonical_skill}")
+        print(f"Source Status    : {'Found' if canonical_skill.exists() else 'Missing'}\n")
+
+        headers = ["TARGET", "RUNTIME", "DEPLOYMENT TYPE", "STATUS", "INSTALL PATH"]
+        rows = []
+
+        def get_sha256(p: Path):
+            try:
+                return hashlib.sha256(p.read_bytes()).hexdigest()
+            except Exception:
+                return None
+
+        src_hash = get_sha256(canonical_skill)
+
+        for key, info in SKILL_TARGETS.items():
+            dst = info["path"]
+            if not dst.exists() and not dst.is_symlink():
+                rows.append([key, info["name"], "None", "Not Installed", str(dst)])
+                continue
+
+            if dst.is_symlink():
+                try:
+                    target_resolved = dst.resolve()
+                    if target_resolved == canonical_skill:
+                        status = "In Sync (Linked)"
+                    else:
+                        status = f"Points to other file"
+                    dep_type = "Symlink 🔗"
+                except Exception:
+                    dep_type = "Broken Link ⚠️"
+                    status = "Invalid"
+            else:
+                dst_hash = get_sha256(dst)
+                if dst_hash == src_hash:
+                    status = "In Sync"
+                else:
+                    status = "Out of Sync ⚠️"
+                dep_type = "Static Copy 📁"
+
+            rows.append([key, info["name"], dep_type, status, str(dst)])
+
+        table_str = format_table(
+            headers=headers,
+            rows=rows,
+            elastic_cols=[4],
+            style=getattr(args, "style", None)
+        )
+        print(table_str)
+        print("\nTip: Run 'aimail skill install' to link canonical SKILL.md to agy and opencode.")
+
+    elif action == "uninstall":
+        for key in chosen_targets:
+            target_info = SKILL_TARGETS.get(key)
+            if not target_info:
+                continue
+            dst = target_info["path"]
+            if dst.is_symlink() or dst.exists():
+                try:
+                    dst.unlink()
+                    print(f"  ✓ [{key}] Removed {dst}")
+                except Exception as e:
+                    print(f"  ✗ [{key}] Failed to remove {dst}: {e}", file=sys.stderr)
+            else:
+                print(f"  - [{key}] Not installed ({dst})")
+
+
 def cmd_serve(args):
     """Start the aimail web UI dashboard (single-page app served over HTTP)."""
     import json
@@ -2957,6 +3114,24 @@ def main():
     p_users.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
     p_users.add_argument("-v", "--verbose", action="store_true", help="Show full IDs and detailed properties")
 
+    # skill
+    p_skill = subparsers.add_parser("skill", help="Manage aimail skill deployment across agent platforms")
+    p_skill.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
+    p_skill_sub = p_skill.add_subparsers(dest="skill_action")
+
+    # skill install
+    p_s_inst = p_skill_sub.add_parser("install", help="Deploy aimail SKILL.md to agy, opencode, or other agent runtimes")
+    p_s_inst.add_argument("--mode", choices=["symlink", "copy"], default="symlink", help="Deployment mode: symlink (live updates) or copy (default: symlink)")
+    p_s_inst.add_argument("--targets", help="Comma-separated target runtimes: agy, opencode, claude (default: agy,opencode)")
+
+    # skill status
+    p_s_status = p_skill_sub.add_parser("status", help="Check skill installation and synchronization status")
+    p_s_status.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
+
+    # skill uninstall
+    p_s_uninst = p_skill_sub.add_parser("uninstall", help="Remove deployed skill links/files")
+    p_s_uninst.add_argument("--targets", help="Comma-separated target runtimes to remove (default: agy,opencode)")
+
     # serve
     p_serve = subparsers.add_parser("serve", help="Start the aimail web UI dashboard")
     p_serve.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
@@ -2999,6 +3174,8 @@ def main():
         cmd_user(args)
     elif args.command == "users":
         cmd_users(args)
+    elif args.command == "skill":
+        cmd_skill(args)
     elif args.command in ("serve", "ui"):
         if args.command == "ui":
             args.open = True
