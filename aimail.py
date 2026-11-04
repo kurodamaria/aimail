@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 DEFAULT_MESSAGES_DIR = Path.home() / "Desktop" / "aimail"
@@ -95,11 +96,13 @@ def init_db(db_path: Path):
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
+                internal_id TEXT UNIQUE,
                 description TEXT NOT NULL,
                 keywords TEXT NOT NULL,
                 client_type TEXT DEFAULT 'agy',
                 conversation_id TEXT,
                 wakeup_cmd TEXT,
+                aliases TEXT DEFAULT '',
                 registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -113,16 +116,47 @@ def init_db(db_path: Path):
             cursor.execute("ALTER TABLE users ADD COLUMN wakeup_cmd TEXT;")
         if "client_type" not in existing_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN client_type TEXT DEFAULT 'agy';")
+        if "internal_id" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN internal_id TEXT;")
+        if "aliases" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN aliases TEXT DEFAULT '';")
+
+        # Backfill internal_id for existing users
+        cursor.execute("SELECT user_id FROM users WHERE internal_id IS NULL OR internal_id = ''")
+        for u in cursor.fetchall():
+            iid = f"usr_{uuid.uuid4().hex[:10]}"
+            cursor.execute("UPDATE users SET internal_id = ? WHERE user_id = ?", (iid, u[0]))
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_internal_id ON users(internal_id);")
+
+        # Migrate messages table to include sender_internal_id and receiver_internal_id
+        cursor.execute("PRAGMA table_info(messages)")
+        msg_cols = {row[1] for row in cursor.fetchall()}
+        if "sender_internal_id" not in msg_cols:
+            cursor.execute("ALTER TABLE messages ADD COLUMN sender_internal_id TEXT;")
+        if "receiver_internal_id" not in msg_cols:
+            cursor.execute("ALTER TABLE messages ADD COLUMN receiver_internal_id TEXT;")
+
+        # Populate message internal IDs if missing
+        cursor.execute("""
+            UPDATE messages
+            SET sender_internal_id = (SELECT internal_id FROM users WHERE users.user_id = messages.sender_id)
+            WHERE sender_internal_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE users.user_id = messages.sender_id);
+        """)
+        cursor.execute("""
+            UPDATE messages
+            SET receiver_internal_id = (SELECT internal_id FROM users WHERE users.user_id = messages.receiver_id)
+            WHERE receiver_internal_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE users.user_id = messages.receiver_id);
+        """)
 
         # Seed initial users if empty
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
             cursor.executemany("""
-                INSERT INTO users (user_id, description, keywords, client_type, conversation_id, wakeup_cmd)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO users (user_id, internal_id, description, keywords, client_type, conversation_id, wakeup_cmd)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, [
-                ("kuro", "Real human user, developer, and system owner.", "human, developer, owner, operator, feedback, decisions", "human", None, 'osascript -e \'display notification "{prompt}" with title "aimail: message from {sender}"\''),
-                ("oschan", "AI assistant and autonomous agent for background task execution, code review, and development.", "agent, python, coding, git, review, automation, testing", "agy", None, None)
+                ("kuro", f"usr_{uuid.uuid4().hex[:10]}", "Real human user, developer, and system owner.", "human, developer, owner, operator, feedback, decisions", "human", None, 'osascript -e \'display notification "{prompt}" with title "aimail: message from {sender}"\''),
+                ("oschan", f"usr_{uuid.uuid4().hex[:10]}", "AI assistant and autonomous agent for background task execution, code review, and development.", "agent, python, coding, git, review, automation, testing", "agy", None, None)
             ])
         conn.commit()
 
@@ -133,6 +167,41 @@ def get_connection(messages_dir: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def resolve_user(conn: sqlite3.Connection, identifier: str):
+    """Resolve an identifier (username handle, internal_id, or alias) to a canonical user Row."""
+    if not identifier:
+        return None
+    cursor = conn.cursor()
+    # 1. Exact match on user_id
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (identifier,))
+    row = cursor.fetchone()
+    if row:
+        return row
+    # 2. Match on internal_id
+    cursor.execute("SELECT * FROM users WHERE internal_id = ?", (identifier,))
+    row = cursor.fetchone()
+    if row:
+        return row
+    # 3. Match on aliases (comma-separated list)
+    cursor.execute("SELECT * FROM users WHERE (',' || COALESCE(aliases, '') || ',') LIKE ?", (f"%,{identifier},%",))
+    row = cursor.fetchone()
+    if row:
+        return row
+    return None
+
+
+def get_canonical_user_id(conn: sqlite3.Connection, identifier: str, notify: bool = False) -> str:
+    """Return the current user_id for an identifier, optionally notifying if resolved from an alias/ID."""
+    if not identifier:
+        return identifier
+    user = resolve_user(conn, identifier)
+    if user:
+        if user["user_id"] != identifier and notify:
+            print(f"Notice: Resolved alias/ID '{identifier}' → '{user['user_id']}'.")
+        return user["user_id"]
+    return identifier
 
 
 def format_table(
@@ -298,10 +367,15 @@ def cmd_sync(args, quiet_if_zero: bool = False):
         if not match:
             continue
 
-        sender = match.group("sender")
-        receiver = match.group("receiver")
+        sender = get_canonical_user_id(conn, match.group("sender"))
+        receiver = get_canonical_user_id(conn, match.group("receiver"))
         topic = match.group("topic")
         timestamp = match.group("timestamp")
+
+        sender_u = resolve_user(conn, sender)
+        receiver_u = resolve_user(conn, receiver)
+        sender_iid = sender_u["internal_id"] if sender_u else None
+        receiver_iid = receiver_u["internal_id"] if receiver_u else None
 
         # Check for corresponding attachment in attachments_dir
         stem = entry.stem
@@ -312,9 +386,9 @@ def cmd_sync(args, quiet_if_zero: bool = False):
 
         if rel_path not in indexed_files:
             cursor.execute("""
-                INSERT INTO messages (sender_id, receiver_id, topic, message_timestamp, md_file_path, attachment_path, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'new')
-            """, (sender, receiver, topic, timestamp, rel_path, attachment_path))
+                INSERT INTO messages (sender_id, receiver_id, sender_internal_id, receiver_internal_id, topic, message_timestamp, md_file_path, attachment_path, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new')
+            """, (sender, receiver, sender_iid, receiver_iid, topic, timestamp, rel_path, attachment_path))
             added += 1
         else:
             # Check if attachment appeared after indexing
@@ -347,10 +421,10 @@ def cmd_list(args):
 
     if args.to:
         query += " AND receiver_id = ?"
-        params.append(args.to)
+        params.append(get_canonical_user_id(conn, args.to))
     if args.sender:
         query += " AND sender_id = ?"
-        params.append(args.sender)
+        params.append(get_canonical_user_id(conn, args.sender))
     if args.status and args.status != "all":
         query += " AND status = ?"
         params.append(args.status)
@@ -561,14 +635,13 @@ def cmd_show(args):
 
 def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messages_dir: Path):
     conn = get_connection(messages_dir)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, client_type, conversation_id, wakeup_cmd FROM users WHERE user_id = ?", (receiver,))
-    row = cursor.fetchone()
+    row = resolve_user(conn, receiver)
     conn.close()
 
     if not row:
         return
 
+    canonical_receiver = row["user_id"]
     client_type = (row["client_type"] or "agy").lower()
     conv_id = row["conversation_id"]
     wakeup_template = row["wakeup_cmd"]
@@ -581,7 +654,7 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
         try:
             final_cmd = wakeup_template.format(
                 sender=sender,
-                receiver=receiver,
+                receiver=canonical_receiver,
                 topic=topic,
                 file=file_path,
                 prompt=prompt,
@@ -598,7 +671,7 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
             final_cmd = f'opencode run --auto -s "{session_id}" "{escaped_prompt}"'
         else:
             final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
-    elif client_type == "human" or receiver == "kuro":
+    elif client_type == "human" or canonical_receiver == "kuro":
         escaped_msg = f"New message from {sender} on '{topic}'".replace('"', '\\"')
         final_cmd = f'osascript -e \'display notification "{escaped_msg}" with title "aimail"\''
 
@@ -611,9 +684,9 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
                 stderr=subprocess.DEVNULL,
                 start_new_session=True
             )
-            print(f"Triggered background wakeup for '{receiver}'.")
+            print(f"Triggered background wakeup for '{canonical_receiver}'.")
         except Exception as e:
-            print(f"Warning: Failed to execute wakeup for '{receiver}': {e}", file=sys.stderr)
+            print(f"Warning: Failed to execute wakeup for '{canonical_receiver}': {e}", file=sys.stderr)
 
 
 def cmd_send(args):
@@ -636,8 +709,16 @@ def cmd_send(args):
             print(f"Error: Attachment file '{args.attach}' not found.", file=sys.stderr)
             sys.exit(1)
 
-    sender = args.sender
-    receiver = args.receiver
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    sender = get_canonical_user_id(conn, args.sender, notify=True)
+    receiver = get_canonical_user_id(conn, args.receiver, notify=True)
+    sender_u = resolve_user(conn, sender)
+    receiver_u = resolve_user(conn, receiver)
+    sender_iid = sender_u["internal_id"] if sender_u else None
+    receiver_iid = receiver_u["internal_id"] if receiver_u else None
+
     topic = args.topic
     ts = args.timestamp or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -668,19 +749,14 @@ def cmd_send(args):
         shutil.copy2(source_attach, target_attach_path)
         print(f"Copied attachment to: {target_attach_path}")
 
-    # Insert into database
-    conn = get_connection(messages_dir)
-    cursor = conn.cursor()
-
     # Informative notice if receiver is not registered
-    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (receiver,))
-    if not cursor.fetchone():
+    if not receiver_u:
         print(f"Notice: Receiver '{receiver}' is not in user directory. Run 'aimail users' to see registered agents.")
 
     cursor.execute("""
-        INSERT INTO messages (sender_id, receiver_id, topic, message_timestamp, md_file_path, attachment_path, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'new')
-    """, (sender, receiver, topic, ts, db_md_path, db_attach_path))
+        INSERT INTO messages (sender_id, receiver_id, sender_internal_id, receiver_internal_id, topic, message_timestamp, md_file_path, attachment_path, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new')
+    """, (sender, receiver, sender_iid, receiver_iid, topic, ts, db_md_path, db_attach_path))
     conn.commit()
     conn.close()
     print(f"Message registered in SQLite database with status 'new'.")
@@ -894,9 +970,8 @@ def cmd_inspect(args):
             sys.exit(1)
         user_id = row["sender_id"] if args.sender else row["receiver_id"]
     else:
-        # Check if target is a registered user ID
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (target,))
-        u_row = cursor.fetchone()
+        # Check if target is a registered user ID, alias, or internal ID
+        u_row = resolve_user(conn, target)
         if u_row:
             user_id = u_row["user_id"]
         else:
@@ -908,8 +983,7 @@ def cmd_inspect(args):
             else:
                 user_id = target
 
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user_row = cursor.fetchone()
+    user_row = resolve_user(conn, user_id)
     conn.close()
 
     if not user_row:
@@ -970,9 +1044,10 @@ def cmd_user(args):
         if wakeup_cmd:
             wakeup_cmd = wakeup_cmd.strip()
 
+        new_iid = f"usr_{uuid.uuid4().hex[:10]}"
         cursor.execute("""
-            INSERT INTO users (user_id, description, keywords, client_type, conversation_id, wakeup_cmd, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO users (user_id, internal_id, description, keywords, client_type, conversation_id, wakeup_cmd, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(user_id) DO UPDATE SET
                 description=excluded.description,
                 keywords=excluded.keywords,
@@ -980,20 +1055,124 @@ def cmd_user(args):
                 conversation_id=COALESCE(excluded.conversation_id, users.conversation_id),
                 wakeup_cmd=COALESCE(excluded.wakeup_cmd, users.wakeup_cmd),
                 updated_at=CURRENT_TIMESTAMP
-        """, (user_id, desc, keywords, client_type, conv_id, wakeup_cmd))
+        """, (user_id, new_iid, desc, keywords, client_type, conv_id, wakeup_cmd))
         conn.commit()
         print(f"User '{user_id}' ({client_type}) registered/updated successfully.")
 
+    elif action == "rename":
+        old_identifier = args.old_name.strip()
+        new_name = args.new_name.strip()
+
+        if not re.match(r"^[A-Za-z0-9_-]+$", new_name):
+            print(f"Error: Invalid username '{new_name}'. Only letters, numbers, underscores, and hyphens are allowed.", file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+
+        user_row = resolve_user(conn, old_identifier)
+        if not user_row:
+            print(f"Error: User '{old_identifier}' not found in directory.", file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+
+        old_canonical = user_row["user_id"]
+        internal_id = user_row["internal_id"]
+
+        if old_canonical == new_name:
+            print(f"User is already named '{new_name}'. Nothing to rename.")
+            conn.close()
+            return
+
+        conflict = resolve_user(conn, new_name)
+        if conflict and conflict["internal_id"] != internal_id:
+            print(f"Error: Username or alias '{new_name}' is already taken by user '{conflict['user_id']}'.", file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+
+        # Update aliases list
+        existing_aliases = [a.strip() for a in (user_row["aliases"] or "").split(",") if a.strip()]
+        if old_canonical not in existing_aliases:
+            existing_aliases.append(old_canonical)
+        if new_name in existing_aliases:
+            existing_aliases.remove(new_name)
+        new_aliases_str = ",".join(existing_aliases)
+
+        # 1. Update users table
+        cursor.execute("""
+            UPDATE users
+            SET user_id = ?, aliases = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE internal_id = ?
+        """, (new_name, new_aliases_str, internal_id))
+
+        # 2. Update messages table
+        cursor.execute("UPDATE messages SET sender_id = ? WHERE sender_id = ?", (new_name, old_canonical))
+        sent_updated = cursor.rowcount
+        cursor.execute("UPDATE messages SET receiver_id = ? WHERE receiver_id = ?", (new_name, old_canonical))
+        recv_updated = cursor.rowcount
+
+        # 3. Rename on-disk files in markdown/ and attachments/
+        md_dir = messages_dir / MARKDOWN_SUBDIR
+        att_dir = messages_dir / ATTACHMENTS_SUBDIR
+        files_renamed = 0
+
+        cursor.execute("SELECT id, sender_id, receiver_id, topic, message_timestamp, md_file_path, attachment_path FROM messages WHERE md_file_path LIKE ? OR (attachment_path IS NOT NULL AND attachment_path LIKE ?)", (f"%{old_canonical}%", f"%{old_canonical}%"))
+        affected_msgs = cursor.fetchall()
+
+        for m in affected_msgs:
+            mid = m["id"]
+            orig_md = messages_dir / m["md_file_path"]
+            new_md_name = f"{m['sender_id']}-{m['receiver_id']}-{m['topic']}-{m['message_timestamp']}.md"
+            new_md_path = md_dir / new_md_name
+            new_db_md = f"{MARKDOWN_SUBDIR}/{new_md_name}"
+
+            if orig_md.exists() and orig_md != new_md_path:
+                try:
+                    orig_md.rename(new_md_path)
+                    files_renamed += 1
+                except OSError as e:
+                    print(f"Warning: Failed to rename {orig_md.name} to {new_md_name}: {e}", file=sys.stderr)
+
+            new_db_att = m["attachment_path"]
+            if m["attachment_path"]:
+                orig_att = messages_dir / m["attachment_path"]
+                ext = ""
+                name_l = orig_att.name.lower()
+                if name_l.endswith((".tar.xz", ".tar.gz", ".tar.bz2", ".tar.zst")):
+                    ext = "." + ".".join(orig_att.name.split(".")[-2:])
+                else:
+                    ext = orig_att.suffix
+                new_att_name = f"{m['sender_id']}-{m['receiver_id']}-{m['topic']}-{m['message_timestamp']}{ext}"
+                new_att_path = att_dir / new_att_name
+                new_db_att = f"{ATTACHMENTS_SUBDIR}/{new_att_name}"
+
+                if orig_att.exists() and orig_att != new_att_path:
+                    try:
+                        orig_att.rename(new_att_path)
+                        files_renamed += 1
+                    except OSError as e:
+                        print(f"Warning: Failed to rename {orig_att.name} to {new_att_name}: {e}", file=sys.stderr)
+
+            cursor.execute("UPDATE messages SET md_file_path = ?, attachment_path = ? WHERE id = ?",
+                           (new_db_md, new_db_att, mid))
+
+        conn.commit()
+        print(f"✓ Renamed agent user '{old_canonical}' → '{new_name}'")
+        print(f"  • Internal ID:      {internal_id}")
+        print(f"  • Aliases recorded: {new_aliases_str or '(none)'}")
+        print(f"  • Messages updated: {sent_updated} sent, {recv_updated} received")
+        print(f"  • Files renamed:    {files_renamed} on disk")
+
     elif action == "show":
         user_id = args.id.strip()
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+        row = resolve_user(conn, user_id)
         if not row:
             print(f"User '{user_id}' not found.", file=sys.stderr)
             conn.close()
             sys.exit(1)
         print("=" * 60)
         print(f"User ID:         {row['user_id']}")
+        print(f"Internal ID:     {row['internal_id'] or 'None'}")
+        if row['aliases']:
+            print(f"Aliases:         {row['aliases']}")
         print(f"Client Type:     {row['client_type'] or 'agy'}")
         print(f"Description:     {row['description']}")
         print(f"Keywords:        {row['keywords']}")
@@ -1196,7 +1375,25 @@ header .hright{display:flex;align-items:center;gap:10px}
 .msg-row:hover{background:var(--surface2)}
 .msg-row.selected{background:rgba(88,166,255,0.08);border-left:3px solid var(--accent)}
 .msg-row-top{display:flex;align-items:center;gap:6px}
-.msg-row-from{font-weight:600;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg-row-id{
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:11px;
+  color:var(--muted);
+  font-weight:700;
+  padding:1px 5px;
+  background:rgba(255,255,255,0.06);
+  border-radius:4px;
+  flex-shrink:0;
+}
+.agent-tag{
+  padding:1px 6px;
+  border-radius:4px;
+  font-size:12px;
+  font-weight:600;
+  display:inline-flex;
+  align-items:center;
+}
+.msg-row-from{font-weight:600;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:4px}
 .msg-row-time{font-size:11px;color:var(--muted);flex-shrink:0}
 .msg-row-topic{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .msg-row-bottom{display:flex;align-items:center;gap:5px}
@@ -1232,7 +1429,21 @@ header .hright{display:flex;align-items:center;gap:10px}
   padding:14px 20px 12px;border-bottom:1px solid var(--border);
   display:flex;flex-direction:column;gap:6px;
 }
-#detail-topic{font-size:17px;font-weight:700;line-height:1.3}
+#detail-topic{font-size:17px;font-weight:700;line-height:1.3;display:flex;align-items:center}
+.detail-id{
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:14px;
+  color:var(--muted);
+  font-weight:700;
+  margin-right:6px;
+}
+.meta-label{
+  font-size:11px;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:.3px;
+  font-weight:600;
+}
 #detail-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 #detail-meta .meta-pill{font-size:12px;color:var(--muted)}
 #detail-meta .arrow{color:var(--border)}
@@ -1388,6 +1599,7 @@ header .hright{display:flex;align-items:center;gap:10px}
     <div id="msg-list-pane">
       <div id="list-header">
         <h2 id="list-title">Inbox</h2>
+        <button class="btn sm" id="sort-toggle-btn" onclick="toggleSortOrder()" title="Toggle chronological order (Newest first / Oldest first)">⬇ Newest</button>
       </div>
       <div style="padding:8px 10px;border-bottom:1px solid var(--border)">
         <input type="search" id="search-box" placeholder="Search messages…" oninput="onSearch(this.value)"/>
@@ -1409,10 +1621,15 @@ header .hright{display:flex;align-items:center;gap:10px}
       <div id="detail-content">
         <div id="detail-header">
           <button class="back-btn" onclick="closeMobileDetail()">← Back</button>
-          <div id="detail-topic">Topic</div>
+          <div id="detail-topic">
+            <span class="detail-id" id="detail-id-badge"></span>
+            <span id="detail-topic-text">Topic</span>
+          </div>
           <div id="detail-meta">
+            <span class="meta-label">From:</span>
             <span class="meta-pill" id="dmeta-from"></span>
             <span class="arrow">→</span>
+            <span class="meta-label">To:</span>
             <span class="meta-pill" id="dmeta-to"></span>
             <span id="dmeta-badge"></span>
             <span class="meta-pill" id="dmeta-time" style="margin-left:auto"></span>
@@ -1477,6 +1694,14 @@ let currentAgent = null;
 let selectedId = null;
 let searchQuery = '';
 let selfUser = null;  // best-guess "me" for reply defaults
+let sortOrder = 'desc'; // 'desc' = newest first, 'asc' = oldest first
+
+function toggleSortOrder() {
+  sortOrder = sortOrder === 'desc' ? 'asc' : 'desc';
+  const btn = document.getElementById('sort-toggle-btn');
+  if (btn) btn.textContent = sortOrder === 'desc' ? '⬇ Newest' : '⬆ Oldest';
+  renderList();
+}
 
 // ════════════════════════════════════════════════════════
 //  BOOTSTRAP
@@ -1506,7 +1731,9 @@ async function loadUsers() {
   const r = await fetch('/api/users');
   if (!r.ok) return;
   allUsers = await r.json();
-  if (allUsers.length) selfUser = allUsers[0].user_id;
+  const human = allUsers.find(u => u.client_type === 'human');
+  if (human) selfUser = human.user_id;
+  else if (allUsers.length) selfUser = allUsers[0].user_id;
 }
 
 async function loadDetail(id) {
@@ -1562,17 +1789,9 @@ function getFiltered() {
     }
   } else {
     if (currentTab === 'inbox') {
-      if (selfUser) {
-        msgs = allMessages.filter(m => m.receiver_id === selfUser);
-      } else {
-        msgs = allMessages.filter(m => ['new', 'processing'].includes(m.status));
-      }
+      msgs = allMessages.filter(m => ['new', 'processing'].includes(m.status));
     } else if (currentTab === 'sent') {
-      if (selfUser) {
-        msgs = allMessages.filter(m => m.sender_id === selfUser);
-      } else {
-        msgs = allMessages.filter(m => m.status === 'replied');
-      }
+      msgs = allMessages.filter(m => m.status === 'replied');
     } else { // 'all'
       msgs = allMessages;
     }
@@ -1583,7 +1802,8 @@ function getFiltered() {
     msgs = msgs.filter(m =>
       (m.topic && m.topic.toLowerCase().includes(q)) ||
       (m.sender_id && m.sender_id.toLowerCase().includes(q)) ||
-      (m.receiver_id && m.receiver_id.toLowerCase().includes(q))
+      (m.receiver_id && m.receiver_id.toLowerCase().includes(q)) ||
+      (String(m.id).includes(q))
     );
   }
   return msgs;
@@ -1599,8 +1819,8 @@ function renderSidebar() {
     document.getElementById('cnt-sent').textContent = allMessages.filter(m => m.sender_id === currentAgent).length;
     document.getElementById('cnt-all').textContent = allMessages.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent).length;
   } else {
-    document.getElementById('cnt-inbox').textContent = selfUser ? allMessages.filter(m => m.receiver_id === selfUser).length : allMessages.filter(m => ['new','processing'].includes(m.status)).length;
-    document.getElementById('cnt-sent').textContent = selfUser ? allMessages.filter(m => m.sender_id === selfUser).length : 0;
+    document.getElementById('cnt-inbox').textContent = allMessages.filter(m => ['new','processing'].includes(m.status)).length;
+    document.getElementById('cnt-sent').textContent = allMessages.filter(m => m.status === 'replied').length;
     document.getElementById('cnt-all').textContent = allMessages.length;
   }
 
@@ -1677,15 +1897,23 @@ function renderList() {
   }
 
   container.innerHTML = '';
-  msgs.slice().reverse().forEach(m => {
+  const ordered = sortOrder === 'desc' ? msgs.slice().reverse() : msgs.slice();
+  ordered.forEach(m => {
     const row = document.createElement('div');
     row.className = 'msg-row' + (m.id === selectedId ? ' selected' : '');
     row.dataset.id = m.id;
 
+    const fromHue = [...m.sender_id].reduce((a,c) => a + c.charCodeAt(0), 0) % 360;
+    const toHue = [...m.receiver_id].reduce((a,c) => a + c.charCodeAt(0), 0) % 360;
     const ts = formatTime(m.message_timestamp);
     row.innerHTML = `
       <div class="msg-row-top">
-        <span class="msg-row-from">${esc(m.sender_id)} → ${esc(m.receiver_id)}</span>
+        <span class="msg-row-id">#${m.id}</span>
+        <span class="msg-row-from">
+          <span class="agent-tag" style="background:hsl(${fromHue},30%,20%);color:hsl(${fromHue},70%,75%)">${esc(m.sender_id)}</span>
+          <span class="arrow">→</span>
+          <span class="agent-tag" style="background:hsl(${toHue},30%,20%);color:hsl(${toHue},70%,75%)">${esc(m.receiver_id)}</span>
+        </span>
         <span class="msg-row-time">${ts}</span>
       </div>
       <div class="msg-row-bottom">
@@ -1726,7 +1954,10 @@ async function refreshDetail(id) {
 }
 
 function renderDetail(data) {
-  document.getElementById('detail-topic').textContent = data.topic;
+  const badgeEl = document.getElementById('detail-id-badge');
+  if (badgeEl) badgeEl.textContent = '#' + data.id;
+  const topicEl = document.getElementById('detail-topic-text') || document.getElementById('detail-topic');
+  if (topicEl) topicEl.textContent = data.topic;
   document.getElementById('dmeta-from').textContent = data.sender_id;
   document.getElementById('dmeta-to').textContent = data.receiver_id;
   document.getElementById('dmeta-badge').innerHTML = badgeHtml(data.status);
@@ -2262,6 +2493,14 @@ function toast(msg, type = 'info', ms = 3000) {
                 self._send_json({"error": "topic must be alphanumeric+underscore"}, 400)
                 return
 
+            conn = self._db()
+            frm = get_canonical_user_id(conn, frm)
+            to = get_canonical_user_id(conn, to)
+            sender_u = resolve_user(conn, frm)
+            receiver_u = resolve_user(conn, to)
+            sender_iid = sender_u["internal_id"] if sender_u else None
+            receiver_iid = receiver_u["internal_id"] if receiver_u else None
+
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             md_dir = messages_dir / MARKDOWN_SUBDIR
             md_dir.mkdir(parents=True, exist_ok=True)
@@ -2272,14 +2511,14 @@ function toast(msg, type = 'info', ms = 3000) {
             try:
                 md_path.write_text(content, encoding="utf-8")
             except Exception as e:
+                conn.close()
                 self._send_json({"error": f"write failed: {e}"}, 500)
                 return
 
-            conn = self._db()
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO messages (sender_id, receiver_id, topic, message_timestamp, md_file_path, status) VALUES (?,?,?,?,?,'new')",
-                (frm, to, topic, ts, db_md_path),
+                "INSERT INTO messages (sender_id, receiver_id, sender_internal_id, receiver_internal_id, topic, message_timestamp, md_file_path, status) VALUES (?,?,?,?,?,?,?, 'new')",
+                (frm, to, sender_iid, receiver_iid, topic, ts, db_md_path),
             )
             new_id = cur.lastrowid
             conn.commit()
@@ -2505,6 +2744,16 @@ def main():
     p_u_find.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
     p_u_find.add_argument("-v", "--verbose", action="store_true", help="Show full IDs and detailed properties")
 
+    # user rename
+    p_u_ren = p_user_sub.add_parser("rename", help="Rename an agent user handle while preserving internal ID and message history")
+    p_u_ren.add_argument("old_name", help="Current username, alias, or internal ID (e.g. antigravity)")
+    p_u_ren.add_argument("new_name", help="New username handle (e.g. gymchan)")
+
+    # shortcut: aimail rename <old> <new>
+    p_ren = subparsers.add_parser("rename", help="Shortcut to rename an agent user (same as 'aimail user rename <old> <new>')")
+    p_ren.add_argument("old_name", help="Current username, alias, or internal ID (e.g. antigravity)")
+    p_ren.add_argument("new_name", help="New username handle (e.g. gymchan)")
+
     # shortcut: aimail users
     p_users = subparsers.add_parser("users", help="Shortcut to list all registered users (same as 'aimail user list')")
     p_users.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
@@ -2545,6 +2794,9 @@ def main():
         cmd_close(args)
     elif args.command == "revoke":
         cmd_revoke(args)
+    elif args.command == "rename":
+        args.user_action = "rename"
+        cmd_user(args)
     elif args.command == "user":
         cmd_user(args)
     elif args.command == "users":

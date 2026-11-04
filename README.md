@@ -331,6 +331,11 @@ aimail user register --id coder --client opencode --desc "OpenCode agent" --keyw
 
 # Register a custom/tmux agent:
 aimail user register --id bot --client custom --desc "Custom runner" --keywords "scripts" --wakeup-cmd "tmux send-keys -t worker '{prompt}' Enter"
+
+# Rename an agent (preserves immutable internal ID, message history, aliases, and renames on-disk files):
+aimail rename antigravity gymchan
+# Or via subcommand:
+aimail user rename antigravity gymchan
 ```
 
 ---

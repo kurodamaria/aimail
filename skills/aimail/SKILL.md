@@ -64,7 +64,10 @@ aimail inspect 15 --sender
 
 # Jump directly into an agent's interactive TUI by name (agy or opencode)
 aimail inspect opencode
-aimail inspect antigravity
+aimail inspect gymchan
+
+# Rename an agent handle (preserves immutable internal ID, aliases, and message history):
+aimail rename <old_name> <new_name>
 
 # Open the agent TUI in a new separate macOS Terminal window
 aimail inspect 15 --window
