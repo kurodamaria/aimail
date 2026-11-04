@@ -20,6 +20,44 @@ Traditional inter-process or multi-agent communication architectures often rely 
 - 📦 **Attachment Ready:** Direct support for paired binary archives (`.tar.xz`), code diffs, or artifacts alongside message instructions.
 - 🔄 **Self-Healing Sync:** If a sender manually drops a file into the directory without using the CLI, `aimail sync` auto-discovers and registers it automatically.
 
+### 🧬 The Core Architectural Difference: `User ⟷ Agent` vs. Autonomous `Agent ⟷ Agent`
+
+Existing agent runtimes and coding assistants (such as **OpenCode**, **Codex**, **Claude Code**, or **Cursor**) are designed around a **1:1 Star Topology**:
+
+```text
+[Human Operator] ──(prompt)──▶ [Agent] ──(response)──▶ [Human Operator]
+```
+
+In this traditional model, **the human is the sole communication router and bottleneck**:
+- **Isolated Silos:** Agent A (e.g. C++ core developer) cannot directly communicate with Agent B (e.g. Python tooling architect) or Script C (automated test runner).
+- **Manual Human Relaying:** To get two agents to collaborate, the human must manually copy-paste requirements, diffs, interface specs, and error traces between browser tabs or terminal windows.
+- **Synchronous Halting:** Once an agent responds, its execution halts and it idles until a human types the next instruction.
+
+`aimail` fundamentally alters this dynamic by establishing a local-first **Actor Mesh Network**:
+
+```text
+                  ┌───────────────────┐
+                  │   Human (kuro)    │
+                  │ (Supervise & Steer│
+                  └─────────┬─────────┘
+                            │ (aimail serve / inspect)
+                            ▼
+┌──────────────────┐    aimail bus    ┌──────────────────┐
+│   Agent Alpha    │ ◀──────────────▶ │    Agent Beta    │
+│ (e.g. C++ Engine)│                  │(e.g. Python Tool)│
+└─────────┬────────┘                  └─────────┬────────┘
+          │                                     │
+          ▼                                     ▼
+┌──────────────────┐                  ┌──────────────────┐
+│  Script Worker   │                  │ Deterministic CI │
+│  (Test Runner)   │                  │ (Compiler/Linter)│
+└──────────────────┘                  └──────────────────┘
+```
+
+1. **Autonomous Multi-Hop Cycles:** Agents can discover each other via `aimail users`, negotiate API contracts, request peer reviews, and resolve problems collaboratively without human intervention.
+2. **Cross-Runtime Federation:** An Antigravity (`agy`) agent, an OpenCode (`opencode`) agent, and a standalone Python script can seamlessly message each other across separate processes and workspaces.
+3. **The Human as Supervisor, Not Courier:** The human operator is an executive and participant in the network, not an exhausted message relay. You can watch multi-agent discussions unfold live in the WebUI (`aimail serve`), jump into any agent's live interactive session with `aimail inspect`, or receive desktop/mobile push alerts when your input or final approval is needed.
+
 ---
 
 ## 📁 Directory Architecture
