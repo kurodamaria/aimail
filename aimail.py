@@ -135,7 +135,135 @@ def get_connection(messages_dir: Path) -> sqlite3.Connection:
     return conn
 
 
-def cmd_sync(args):
+def format_table(
+    headers: list,
+    rows: list,
+    elastic_cols: list = None,
+    min_widths: list = None,
+    max_widths: list = None,
+    style: str = None,
+    target_width: int = None
+) -> str:
+    """Format tabular data into an adaptive, cleanly-aligned terminal table."""
+    if not rows:
+        return "No records found."
+
+    cols = len(headers)
+    elastic_cols = elastic_cols or []
+
+    # Detect style: default to box if interactive TTY, plain if piped
+    if not style or style == "auto":
+        style = "box" if sys.stdout.isatty() else "plain"
+
+    # Detect UTF-8 capabilities
+    utf8 = True
+    try:
+        "┌─┐│└─┘├─┤┬┴┼…".encode(sys.stdout.encoding or "utf-8")
+    except Exception:
+        utf8 = False
+
+    ellipsis_char = "…" if utf8 else "..."
+
+    # Normalize rows to strings
+    str_rows = []
+    for r in rows:
+        str_rows.append([str(val) if val is not None else "" for val in r])
+
+    # Plain tab-separated for pipes/scripts
+    if style == "plain":
+        lines = ["\t".join(headers)]
+        for r in str_rows:
+            lines.append("\t".join(r))
+        return "\n".join(lines)
+
+    term_w = target_width or shutil.get_terminal_size(fallback=(100, 24)).columns
+    term_w = max(term_w, 60)
+
+    # Initial widths based on max content
+    data_widths = [len(h) for h in headers]
+    for r in str_rows:
+        for i, val in enumerate(r):
+            data_widths[i] = max(data_widths[i], len(val))
+
+    col_widths = list(data_widths)
+    if max_widths:
+        for i, m in enumerate(max_widths):
+            if m is not None and i not in elastic_cols:
+                col_widths[i] = min(col_widths[i], m)
+    if min_widths:
+        for i, m in enumerate(min_widths):
+            if m is not None:
+                col_widths[i] = max(col_widths[i], m)
+
+    # Calculate overhead
+    if style == "clean":
+        overhead = 3 * (cols - 1)
+    else:  # 'box'
+        overhead = 3 * cols + 1
+
+    non_elastic_width = sum(col_widths[i] for i in range(cols) if i not in elastic_cols)
+    avail_for_elastic = term_w - overhead - non_elastic_width
+
+    if elastic_cols:
+        min_elastic_sum = sum((min_widths[i] if min_widths and min_widths[i] else 10) for i in elastic_cols)
+        if avail_for_elastic < min_elastic_sum:
+            avail_for_elastic = min_elastic_sum
+
+        if len(elastic_cols) == 1:
+            col_widths[elastic_cols[0]] = max(avail_for_elastic, min_widths[elastic_cols[0]] if min_widths else 10)
+        elif len(elastic_cols) == 2:
+            w0 = max(int(avail_for_elastic * 0.58), min_widths[elastic_cols[0]] if min_widths else 10)
+            w1 = max(avail_for_elastic - w0, min_widths[elastic_cols[1]] if min_widths else 10)
+            col_widths[elastic_cols[0]] = w0
+            col_widths[elastic_cols[1]] = w1
+        else:
+            share = avail_for_elastic // len(elastic_cols)
+            for c in elastic_cols:
+                col_widths[c] = max(share, min_widths[c] if min_widths else 10)
+
+    def trunc(val, w):
+        val = val.strip()
+        if len(val) > w:
+            cut = w - len(ellipsis_char)
+            return (val[:cut] if cut > 0 else val[:w]) + ellipsis_char
+        return val.ljust(w)
+
+    if style == "clean":
+        sep = "   "
+        head_line = sep.join(headers[i].ljust(col_widths[i]) for i in range(cols))
+        div_char = "─" if utf8 else "-"
+        div_line = sep.join(div_char * col_widths[i] for i in range(cols))
+        lines = [head_line, div_line]
+        for r in str_rows:
+            lines.append(sep.join(trunc(r[i], col_widths[i]) for i in range(cols)))
+        return "\n".join(lines)
+
+    # Box style
+    c_top_l = "┌" if utf8 else "+"
+    c_top_m = "┬" if utf8 else "+"
+    c_top_r = "┐" if utf8 else "+"
+    c_mid_l = "├" if utf8 else "+"
+    c_mid_m = "┼" if utf8 else "+"
+    c_mid_r = "┤" if utf8 else "+"
+    c_bot_l = "└" if utf8 else "+"
+    c_bot_m = "┴" if utf8 else "+"
+    c_bot_r = "┘" if utf8 else "+"
+    h_bar   = "─" if utf8 else "-"
+    v_bar   = "│" if utf8 else "|"
+
+    top = c_top_l + h_bar + (h_bar + c_top_m + h_bar).join(h_bar * col_widths[i] for i in range(cols)) + h_bar + c_top_r
+    head = v_bar + " " + (" " + v_bar + " ").join(headers[i].ljust(col_widths[i]) for i in range(cols)) + " " + v_bar
+    mid = c_mid_l + h_bar + (h_bar + c_mid_m + h_bar).join(h_bar * col_widths[i] for i in range(cols)) + h_bar + c_mid_r
+    bot = c_bot_l + h_bar + (h_bar + c_bot_m + h_bar).join(h_bar * col_widths[i] for i in range(cols)) + h_bar + c_bot_r
+
+    lines = [top, head, mid]
+    for r in str_rows:
+        lines.append(v_bar + " " + (" " + v_bar + " ").join(trunc(r[i], col_widths[i]) for i in range(cols)) + " " + v_bar)
+    lines.append(bot)
+    return "\n".join(lines)
+
+
+def cmd_sync(args, quiet_if_zero: bool = False):
     messages_dir = Path(args.dir).resolve()
     if not messages_dir.exists():
         print(f"Error: Directory {messages_dir} does not exist.", file=sys.stderr)
@@ -202,13 +330,14 @@ def cmd_sync(args):
     conn.commit()
     conn.close()
 
-    print(f"Sync complete. New messages registered: {added}, attachments updated: {updated_attachments}")
+    if not (quiet_if_zero and added == 0 and updated_attachments == 0):
+        print(f"Sync complete. New messages registered: {added}, attachments updated: {updated_attachments}")
 
 
 def cmd_list(args):
     messages_dir = Path(args.dir).resolve()
     # Auto-sync before listing
-    cmd_sync(args)
+    cmd_sync(args, quiet_if_zero=True)
 
     conn = get_connection(messages_dir)
     cursor = conn.cursor()
@@ -238,12 +367,27 @@ def cmd_list(args):
         print("No messages found matching criteria.")
         return
 
-    # Print table header
-    print(f"{'ID':<4} {'STATUS':<12} {'SENDER':<12} {'RECEIVER':<12} {'TOPIC':<20} {'TIMESTAMP':<18} {'ATTACHMENT':<12} {'FILE'}")
-    print("-" * 115)
-    for row in rows:
-        attach_str = "yes" if row["attachment_path"] else "-"
-        print(f"{row['id']:<4} {row['status']:<12} {row['sender_id']:<12} {row['receiver_id']:<12} {row['topic']:<20} {row['message_timestamp']:<18} {attach_str:<12} {row['md_file_path']}")
+    headers = ["ID", "STATUS", "FROM", "TO", "TOPIC", "TIME", "ATT"]
+    data = []
+    for r in rows:
+        att = "yes" if r["attachment_path"] else "-"
+        ts = r["message_timestamp"]
+        if len(ts) >= 15 and "_" in ts and ts[:8].isdigit():
+            ts = f"{ts[4:6]}-{ts[6:8]} {ts[9:11]}:{ts[11:13]}"
+        elif len(ts) >= 16 and "-" in ts:
+            ts = ts[5:16]
+        data.append([str(r["id"]), r["status"], r["sender_id"], r["receiver_id"], r["topic"], ts, att])
+
+    style = getattr(args, "style", None)
+    table_str = format_table(
+        headers=headers,
+        rows=data,
+        elastic_cols=[4],
+        min_widths=[2, 6, 8, 8, 12, 11, 3],
+        max_widths=[4, 10, 14, 14, None, 11, 4],
+        style=style
+    )
+    print(table_str)
 
 
 def cmd_mark(args):
@@ -859,40 +1003,66 @@ def cmd_user(args):
         print(f"Last Updated:    {row['updated_at']}")
         print("=" * 60)
 
-    elif action == "find":
-        query = f"%{args.query.strip()}%"
-        cursor.execute("""
-            SELECT * FROM users 
-            WHERE user_id LIKE ? OR description LIKE ? OR keywords LIKE ? OR client_type LIKE ?
-            ORDER BY user_id ASC
-        """, (query, query, query, query))
-        rows = cursor.fetchall()
-        if not rows:
-            print(f"No users found matching '{args.query}'.")
+    elif action in ("list", "find"):
+        if action == "find":
+            query = f"%{args.query.strip()}%"
+            cursor.execute("""
+                SELECT * FROM users 
+                WHERE user_id LIKE ? OR description LIKE ? OR keywords LIKE ? OR client_type LIKE ?
+                ORDER BY user_id ASC
+            """, (query, query, query, query))
+            rows = cursor.fetchall()
+            if not rows:
+                print(f"No users found matching '{args.query}'.")
+                conn.close()
+                return
         else:
-            print(f"{'USER ID':<10} {'CLIENT':<10} {'WAKEUP / CONV_ID':<26} {'KEYWORDS':<28} {'DESCRIPTION'}")
-            print("-" * 105)
-            for r in rows:
-                c_type = r['client_type'] or 'agy'
-                wakeup_display = r['wakeup_cmd'] or (f"{c_type}:{r['conversation_id']}" if r['conversation_id'] else "none")
-                if len(wakeup_display) > 24:
-                    wakeup_display = wakeup_display[:21] + "..."
-                print(f"{r['user_id']:<10} {c_type:<10} {wakeup_display:<26} {r['keywords']:<28} {r['description']}")
+            cursor.execute("SELECT * FROM users ORDER BY user_id ASC")
+            rows = cursor.fetchall()
+            if not rows:
+                print("No users registered in directory.")
+                conn.close()
+                return
 
-    elif action == "list":
-        cursor.execute("SELECT * FROM users ORDER BY user_id ASC")
-        rows = cursor.fetchall()
-        if not rows:
-            print("No users registered in directory.")
-        else:
-            print(f"{'USER ID':<10} {'CLIENT':<10} {'WAKEUP / CONV_ID':<26} {'KEYWORDS':<28} {'DESCRIPTION'}")
-            print("-" * 105)
+        is_verbose = getattr(args, "verbose", False)
+        style = getattr(args, "style", None)
+
+        if is_verbose:
+            headers = ["USER ID", "CLIENT", "CONVERSATION ID", "DESCRIPTION", "CAPABILITIES"]
+            data = []
             for r in rows:
-                c_type = r['client_type'] or 'agy'
-                wakeup_display = r['wakeup_cmd'] or (f"{c_type}:{r['conversation_id']}" if r['conversation_id'] else "none")
-                if len(wakeup_display) > 24:
-                    wakeup_display = wakeup_display[:21] + "..."
-                print(f"{r['user_id']:<10} {c_type:<10} {wakeup_display:<26} {r['keywords']:<28} {r['description']}")
+                c_type = r["client_type"] or "agy"
+                conv = r["conversation_id"] or "-"
+                data.append([r["user_id"], c_type, conv, r["description"], r["keywords"]])
+            table_str = format_table(
+                headers=headers,
+                rows=data,
+                elastic_cols=[3, 4],
+                min_widths=[11, 8, 20, 25, 20],
+                max_widths=[14, 8, 38, None, None],
+                style=style
+            )
+        else:
+            headers = ["USER ID", "CLIENT", "SESSION", "DESCRIPTION", "CAPABILITIES"]
+            data = []
+            for r in rows:
+                c_type = r["client_type"] or "agy"
+                conv = r["conversation_id"] or "-"
+                if conv != "-" and len(conv) > 10:
+                    conv = conv[:8] + "…"
+                data.append([r["user_id"], c_type, conv, r["description"], r["keywords"]])
+            table_str = format_table(
+                headers=headers,
+                rows=data,
+                elastic_cols=[3, 4],
+                min_widths=[11, 8, 9, 18, 14],
+                max_widths=[14, 8, 10, None, None],
+                style=style
+            )
+
+        print(table_str)
+        if not is_verbose and sys.stdout.isatty() and style != "plain":
+            print("Tip: Run 'aimail user show <id>' for full profile, or 'aimail users -v' for expanded IDs.")
 
     conn.close()
 
@@ -917,6 +1087,7 @@ def main():
     p_list.add_argument("--sender", help="Filter by sender ID")
     p_list.add_argument("--status", choices=["new", "processing", "read", "replied", "closed", "failed", "all"], default="all", help="Filter by status (default: all)")
     p_list.add_argument("--limit", type=int, default=20, help="Max records to return")
+    p_list.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
 
     # mark
     p_mark = subparsers.add_parser("mark", help="Update message status")
@@ -1003,7 +1174,9 @@ def main():
     p_u_reg.add_argument("--wakeup-cmd", help="Custom wakeup shell command template (supports {sender}, {topic}, {prompt}, {conv_id}, {client})")
 
     # user list
-    p_user_sub.add_parser("list", help="List all registered agents and users")
+    p_u_list = p_user_sub.add_parser("list", help="List all registered agents and users")
+    p_u_list.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
+    p_u_list.add_argument("-v", "--verbose", action="store_true", help="Show full IDs and detailed properties")
 
     # user show
     p_u_show = p_user_sub.add_parser("show", help="Show details for a specific user")
@@ -1012,9 +1185,13 @@ def main():
     # user find
     p_u_find = p_user_sub.add_parser("find", help="Search users by keyword or capability")
     p_u_find.add_argument("query", help="Keyword or search query")
+    p_u_find.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
+    p_u_find.add_argument("-v", "--verbose", action="store_true", help="Show full IDs and detailed properties")
 
     # shortcut: aimail users
-    subparsers.add_parser("users", help="Shortcut to list all registered users (same as 'aimail user list')")
+    p_users = subparsers.add_parser("users", help="Shortcut to list all registered users (same as 'aimail user list')")
+    p_users.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
+    p_users.add_argument("-v", "--verbose", action="store_true", help="Show full IDs and detailed properties")
 
     args = parser.parse_args()
 
