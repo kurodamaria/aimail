@@ -503,7 +503,9 @@ def cmd_mark(args):
             sender=msg_row["receiver_id"],
             topic=f"{msg_row['topic']}_replied",
             file_path=msg_row["md_file_path"],
-            messages_dir=messages_dir
+            messages_dir=messages_dir,
+            attachment=msg_row["attachment_path"],
+            msg_id=msg_row["id"]
         )
 
 
@@ -633,7 +635,7 @@ def cmd_show(args):
         print(f"\nWarning: File {file_path} not found on disk.")
 
 
-def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messages_dir: Path):
+def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messages_dir: Path, attachment: str = None, msg_id: int = None):
     conn = get_connection(messages_dir)
     row = resolve_user(conn, receiver)
     conn.close()
@@ -651,18 +653,25 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
 
     final_cmd = None
     if wakeup_template:
-        try:
-            final_cmd = wakeup_template.format(
-                sender=sender,
-                receiver=canonical_receiver,
-                topic=topic,
-                file=file_path,
-                prompt=prompt,
-                conv_id=conv_id or "",
-                client=client_type
-            )
-        except (KeyError, IndexError):
-            final_cmd = wakeup_template
+        params = {
+            "sender": sender,
+            "receiver": canonical_receiver,
+            "topic": topic,
+            "file": file_path,
+            "prompt": prompt,
+            "conv_id": conv_id or "",
+            "client": client_type,
+            "id": str(msg_id) if msg_id is not None else "",
+            "mid": str(msg_id) if msg_id is not None else "",
+            "attachment": attachment or "",
+            "dir": str(messages_dir)
+        }
+        # Cleanly substitute recognized template tokens without crashing on shell braces
+        final_cmd = re.sub(
+            r'\{([a-zA-Z0-9_]+)\}',
+            lambda m: str(params[m.group(1)]) if m.group(1) in params else m.group(0),
+            wakeup_template
+        )
     elif conv_id:
         if client_type == "agy":
             final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
@@ -757,13 +766,14 @@ def cmd_send(args):
         INSERT INTO messages (sender_id, receiver_id, sender_internal_id, receiver_internal_id, topic, message_timestamp, md_file_path, attachment_path, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new')
     """, (sender, receiver, sender_iid, receiver_iid, topic, ts, db_md_path, db_attach_path))
+    new_msg_id = cursor.lastrowid
     conn.commit()
     conn.close()
     print(f"Message registered in SQLite database with status 'new'.")
 
     # Trigger background wakeup unless explicitly disabled
     if not getattr(args, "no_wakeup", False):
-        trigger_wakeup(receiver, sender, topic, db_md_path, messages_dir)
+        trigger_wakeup(receiver, sender, topic, db_md_path, messages_dir, attachment=db_attach_path, msg_id=new_msg_id)
 
     # Erase original files if requested
     if args.erase_original:
@@ -2715,7 +2725,7 @@ function toast(msg, type = 'info', ms = 3000) {
             # Trigger wakeup in background thread
             def _wake():
                 try:
-                    trigger_wakeup(to, frm, topic, db_md_path, messages_dir)
+                    trigger_wakeup(to, frm, topic, db_md_path, messages_dir, attachment=db_attach_path, msg_id=new_id)
                 except Exception:
                     pass
             threading.Thread(target=_wake, daemon=True).start()
@@ -2915,7 +2925,7 @@ def main():
     p_u_reg.add_argument("--desc", required=True, help="Description of the user/agent")
     p_u_reg.add_argument("--keywords", required=True, help="Comma-separated keywords/capabilities")
     p_u_reg.add_argument("--conv-id", help="Conversation ID for agy/opencode resume")
-    p_u_reg.add_argument("--wakeup-cmd", help="Custom wakeup shell command template (supports {sender}, {topic}, {prompt}, {conv_id}, {client})")
+    p_u_reg.add_argument("--wakeup-cmd", help="Custom wakeup shell command template (supports {id}, {sender}, {receiver}, {topic}, {file}, {attachment}, {dir}, {prompt}, {conv_id}, {client})")
 
     # user list
     p_u_list = p_user_sub.add_parser("list", help="List all registered agents and users")

@@ -49,8 +49,9 @@ aimail user register --id <my_id> --client agy --desc "<what I do>" --keywords "
 # 2. OpenCode agent:
 aimail user register --id <my_id> --client opencode --desc "<what I do>" --keywords "<tags>" --conv-id "<session_id>"
 
-# 3. Custom / Other runtimes (tmux, script, curl):
-aimail user register --id <my_id> --client custom --desc "<what I do>" --keywords "<tags>" --wakeup-cmd "tmux send-keys -t worker '{prompt}' Enter"
+# 3. Custom / Deterministic script workers or bots:
+aimail user register --id <my_id> --client custom --desc "<what I do>" --keywords "<tags>" --wakeup-cmd "python3 /path/to/worker.py --id {id} --sender {sender} --file '{file}' --attach '{attachment}'"
+# Template variables available: {id}, {sender}, {receiver}, {topic}, {file}, {attachment}, {dir}, {prompt}, {conv_id}, {client}
 ```
 
 ### Inspecting an Agent's Interactive Session (`aimail inspect`)

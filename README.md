@@ -346,9 +346,60 @@ When a message is sent via `aimail send`, the recipient's wakeup handler is trig
 
 - **Antigravity (`--client agy`):** Automatically executes `agy --conversation <conv-id> -p "<prompt>"` in the background.
 - **OpenCode (`--client opencode`):** Automatically executes `opencode run --auto -s <session-id> "<prompt>"` in the background.
-- **Custom (`--client custom`):** Formats and executes your `--wakeup-cmd` template (supports `{sender}`, `{receiver}`, `{topic}`, `{prompt}`, `{conv_id}`).
+- **Custom (`--client custom`):** Formats and executes your `--wakeup-cmd` template (supports `{id}`, `{sender}`, `{receiver}`, `{topic}`, `{file}`, `{attachment}`, `{dir}`, `{prompt}`, `{conv_id}`, `{client}`).
 - **Human Operator (`--client human` / `kuro`):** Automatically displays a native macOS desktop banner notification (or custom smartphone push alert via Telegram / `ntfy.sh`).
 - **Skip Wakeup:** Pass `--no-wakeup` to `aimail send` to deposit the message silently without triggering the recipient.
+
+---
+
+### 13. Web UI Dashboard (`aimail serve`)
+
+Launch an interactive, local-first web dashboard to inspect, filter, compose, and manage conversations with zero external dependencies:
+
+```bash
+aimail serve
+# Starts single-page app on http://127.0.0.1:8765
+```
+
+Features:
+- **3-Panel Master-Detail Layout:** Filter by status or agent on the left, sortable thread list in the middle, rendered Markdown viewer and quick reply on the right.
+- **Real-Time Live Updates:** Server-Sent Events (SSE) automatically stream inbox updates as soon as agents drop or reply to messages.
+- **Attachment Support:** Drag-and-drop or file picker file uploads, preview links, and download endpoints.
+- **Interactive Inspection:** Jump directly into agent CLI sessions or terminal logs from the web interface.
+
+---
+
+### 14. Universal Script & Pipeline Workers (Actor Pattern)
+
+`aimail` is not restricted to LLM agents and human operators. Any deterministic script, CLI tool, build step, linter, or automated pipeline can be registered as a first-class user:
+
+```bash
+# Register a deterministic script worker
+aimail user register \
+  --id buildbot \
+  --client custom \
+  --desc "Automated C++ & CMake build and test runner" \
+  --keywords "build, cmake, test, ci" \
+  --wakeup-cmd "python3 /path/to/buildbot.py --id {id} --sender {sender} --file '{file}' --attach '{attachment}'"
+```
+
+#### Available Template Tokens in `--wakeup-cmd`:
+- `{id}` / `{mid}`: SQLite message ID (e.g. `42`)
+- `{sender}`: Username of the sender (e.g. `gymchan`, `kuro`)
+- `{receiver}`: Username of the receiver (e.g. `buildbot`)
+- `{topic}`: Topic slug (e.g. `cmake_build`)
+- `{file}`: Full absolute path to the received Markdown file
+- `{attachment}`: Full absolute path to attached archive or binary (or empty string if none)
+- `{dir}`: Root aimail workspace directory
+- `{prompt}`: Formatted notification prompt string
+- `{conv_id}`: Registered session / conversation ID (if any)
+- `{client}`: Client runtime type (`custom`, `agy`, etc.)
+
+The invoked script can perform arbitrary local computations, read `{file}` or `{attachment}`, and reply back deterministically:
+
+```bash
+aimail reply {id} --content "Build succeeded. 42 tests passed." --status replied
+```
 
 ---
 
