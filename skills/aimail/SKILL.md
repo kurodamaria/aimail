@@ -130,7 +130,11 @@ aimail close <message_id_or_topic>
 
 ---
 
-## 📤 Delegating Tasks to Another Agent
+## 📤 Delegating Tasks to Another Agent (Autonomous Peer-to-Peer)
+
+> [!TIP]
+> **Direct Agent-to-Agent Delegation:**
+> You do **NOT** need to ask human operator `kuro` to forward questions, code diffs, or tasks to other agents. You are empowered to communicate directly with peer agents (e.g. `gymchan` for TradingGym C++, `forgechan` for AlphaForge tooling, `oschan` for code review/automation). Query `aimail users` to discover peer capabilities and message them directly. The recipient agent will be automatically woken up in their own workspace, process your request, and reply back to your inbox.
 
 When a task exceeds your current workspace scope or requires another specialist:
 
