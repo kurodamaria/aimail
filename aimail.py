@@ -1493,6 +1493,15 @@ header .hright{display:flex;align-items:center;gap:10px}
   border-radius:6px;color:var(--text);font-size:12px;outline:none;
 }
 #reply-topic-input:focus{border-color:var(--accent)}
+.attach-pill{
+  display:inline-flex;align-items:center;gap:6px;padding:3px 8px;
+  background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+  font-size:12px;color:var(--text);max-width:100%;overflow:hidden;
+}
+.attach-pill .del-btn{
+  cursor:pointer;color:var(--muted);font-weight:bold;margin-left:4px;
+}
+.attach-pill .del-btn:hover{color:var(--failed)}
 
 /* ── COMPOSE MODAL ───────────────────────────────────── */
 .modal-overlay{
@@ -1641,9 +1650,11 @@ header .hright{display:flex;align-items:center;gap:10px}
           <label id="reply-box-label">Quick Reply</label>
           <div id="reply-row">
             <input id="reply-topic-input" type="text" placeholder="Topic (auto-filled)"/>
+            <label class="btn sm" style="cursor:pointer;margin:0" title="Attach file to reply">📎 <span id="reply-attach-label">Attach</span><input type="file" id="reply-file-input" style="display:none" onchange="onReplyFileChange(this)"/></label>
             <button class="btn sm" onclick="submitReply()">Send Reply</button>
             <button class="btn sm danger" id="btn-close-thread" onclick="closeThread()">Close</button>
           </div>
+          <div id="reply-attach-preview" style="display:none;align-items:center;gap:6px;padding:2px 0"></div>
           <textarea id="reply-textarea" placeholder="Write your reply in markdown…"></textarea>
         </div>
       </div>
@@ -1672,6 +1683,15 @@ header .hright{display:flex;align-items:center;gap:10px}
     <div class="form-group">
       <label>Body (Markdown)</label>
       <textarea id="compose-body" placeholder="Write your message…"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Attachment <small style="color:var(--muted)">(optional)</small></label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label class="btn sm" style="cursor:pointer;margin:0" title="Choose file from computer">📁 Choose File<input type="file" id="compose-file-input" style="display:none" onchange="onComposeFileChange(this)"/></label>
+        <span style="font-size:12px;color:var(--muted)">or</span>
+        <input type="text" id="compose-file-path" placeholder="/path/to/local/file.tar.xz" style="flex:1" oninput="onComposePathChange(this.value)"/>
+      </div>
+      <div id="compose-attach-preview" style="display:none;margin-top:6px;align-items:center;gap:8px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px"></div>
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeCompose()">Cancel</button>
@@ -2048,6 +2068,110 @@ async function markMsg(id, status) {
   }
 }
 
+// ════════════════════════════════════════════════════════
+//  ATTACHMENTS (COMPOSE & REPLY)
+// ════════════════════════════════════════════════════════
+let composeAttachment = null;
+let replyAttachment = null;
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function onComposeFileChange(input) {
+  if (!input.files || !input.files[0]) return;
+  const f = input.files[0];
+  const reader = new FileReader();
+  reader.onload = () => {
+    const b64 = reader.result.split(',')[1];
+    composeAttachment = { name: f.name, data: b64, size: f.size };
+    const pInp = document.getElementById('compose-file-path');
+    if (pInp) pInp.value = '';
+    renderComposeAttachment();
+  };
+  reader.readAsDataURL(f);
+}
+
+function onComposePathChange(val) {
+  val = val.trim();
+  if (val) {
+    const fInp = document.getElementById('compose-file-input');
+    if (fInp) fInp.value = '';
+    composeAttachment = { name: val.split('/').pop(), path: val };
+  } else {
+    composeAttachment = null;
+  }
+  renderComposeAttachment();
+}
+
+function removeComposeAttachment() {
+  composeAttachment = null;
+  const fInp = document.getElementById('compose-file-input');
+  if (fInp) fInp.value = '';
+  const pInp = document.getElementById('compose-file-path');
+  if (pInp) pInp.value = '';
+  renderComposeAttachment();
+}
+
+function renderComposeAttachment() {
+  const preview = document.getElementById('compose-attach-preview');
+  if (!preview) return;
+  if (!composeAttachment) {
+    preview.style.display = 'none';
+    preview.innerHTML = '';
+    return;
+  }
+  const desc = composeAttachment.path ? `Local: ${composeAttachment.path}` : `${formatBytes(composeAttachment.size)}`;
+  preview.style.display = 'flex';
+  preview.innerHTML = `
+    <span>📎 <strong>${esc(composeAttachment.name)}</strong> <small style="color:var(--muted)">(${esc(desc)})</small></span>
+    <span class="del-btn" onclick="removeComposeAttachment()" title="Remove attachment" style="cursor:pointer;margin-left:auto;color:var(--failed)">✕</span>
+  `;
+}
+
+function onReplyFileChange(input) {
+  if (!input.files || !input.files[0]) return;
+  const f = input.files[0];
+  const reader = new FileReader();
+  reader.onload = () => {
+    const b64 = reader.result.split(',')[1];
+    replyAttachment = { name: f.name, data: b64, size: f.size };
+    renderReplyAttachment();
+  };
+  reader.readAsDataURL(f);
+}
+
+function removeReplyAttachment() {
+  replyAttachment = null;
+  const inp = document.getElementById('reply-file-input');
+  if (inp) inp.value = '';
+  renderReplyAttachment();
+}
+
+function renderReplyAttachment() {
+  const preview = document.getElementById('reply-attach-preview');
+  const lbl = document.getElementById('reply-attach-label');
+  if (!preview) return;
+  if (!replyAttachment) {
+    preview.style.display = 'none';
+    preview.innerHTML = '';
+    if (lbl) lbl.textContent = 'Attach';
+    return;
+  }
+  if (lbl) lbl.textContent = 'Attached';
+  preview.style.display = 'flex';
+  preview.innerHTML = `
+    <span class="attach-pill">
+      📎 <strong>${esc(replyAttachment.name)}</strong> (${formatBytes(replyAttachment.size)})
+      <span class="del-btn" onclick="removeReplyAttachment()">✕</span>
+    </span>
+  `;
+}
+
 async function closeThread() {
   const box = document.getElementById('reply-box');
   const id = +box.dataset.msgId;
@@ -2063,14 +2187,25 @@ async function submitReply() {
   if (!content) { toast('Reply body is empty', 'error'); return; }
   if (!topic) { toast('Topic is required', 'error'); return; }
 
+  const payload = { from, to, topic, content };
+  if (replyAttachment) {
+    if (replyAttachment.data) {
+      payload.attachment_name = replyAttachment.name;
+      payload.attachment_data = replyAttachment.data;
+    } else if (replyAttachment.path) {
+      payload.attachment_path = replyAttachment.path;
+    }
+  }
+
   const r = await fetch('/api/send', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({from, to, topic, content})
+    body: JSON.stringify(payload)
   });
   if (r.ok) {
     toast('Reply sent!', 'success');
     document.getElementById('reply-textarea').value = '';
+    removeReplyAttachment();
     // Mark original as replied
     const msgId = +box.dataset.msgId;
     if (msgId) await markMsg(msgId, 'replied');
@@ -2098,11 +2233,13 @@ function openCompose() {
     selTo.add(new Option(uid, uid));
   });
   if (selfUser) selFrom.value = selfUser;
+  removeComposeAttachment();
   document.getElementById('compose-modal').classList.add('open');
 }
 
 function closeCompose() {
   document.getElementById('compose-modal').classList.remove('open');
+  removeComposeAttachment();
 }
 
 async function submitCompose() {
@@ -2113,16 +2250,27 @@ async function submitCompose() {
   if (!from || !to || !topic || !content) { toast('All fields are required', 'error'); return; }
   if (!/^[A-Za-z0-9_]+$/.test(topic)) { toast('Topic: only letters, digits, underscores', 'error'); return; }
 
+  const payload = { from, to, topic, content };
+  if (composeAttachment) {
+    if (composeAttachment.data) {
+      payload.attachment_name = composeAttachment.name;
+      payload.attachment_data = composeAttachment.data;
+    } else if (composeAttachment.path) {
+      payload.attachment_path = composeAttachment.path;
+    }
+  }
+
   const r = await fetch('/api/send', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({from, to, topic, content})
+    body: JSON.stringify(payload)
   });
   if (r.ok) {
     toast('Message sent!', 'success');
     closeCompose();
     document.getElementById('compose-topic').value = '';
     document.getElementById('compose-body').value = '';
+    removeComposeAttachment();
     await loadMessages();
     renderList();
   } else {
@@ -2503,7 +2651,10 @@ function toast(msg, type = 'info', ms = 3000) {
 
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             md_dir = messages_dir / MARKDOWN_SUBDIR
+            att_dir = messages_dir / ATTACHMENTS_SUBDIR
             md_dir.mkdir(parents=True, exist_ok=True)
+            att_dir.mkdir(parents=True, exist_ok=True)
+
             filename = f"{frm}-{to}-{topic}-{ts}.md"
             md_path = md_dir / filename
             db_md_path = f"{MARKDOWN_SUBDIR}/{filename}"
@@ -2515,10 +2666,47 @@ function toast(msg, type = 'info', ms = 3000) {
                 self._send_json({"error": f"write failed: {e}"}, 500)
                 return
 
+            # Process optional attachment (base64 data or local file path)
+            db_attach_path = None
+            attach_name = body.get("attachment_name")
+            attach_b64 = body.get("attachment_data")
+            attach_path_in = body.get("attachment_path")
+
+            if attach_b64 and attach_name:
+                import base64
+                name_l = attach_name.lower()
+                if name_l.endswith((".tar.xz", ".tar.gz", ".tar.bz2", ".tar.zst")):
+                    ext = "." + ".".join(attach_name.split(".")[-2:])
+                else:
+                    ext = Path(attach_name).suffix or ".bin"
+                att_fname = f"{frm}-{to}-{topic}-{ts}{ext}"
+                att_target = att_dir / att_fname
+                try:
+                    att_target.write_bytes(base64.b64decode(attach_b64))
+                    db_attach_path = f"{ATTACHMENTS_SUBDIR}/{att_fname}"
+                except Exception as e:
+                    print(f"Warning: Failed to save base64 attachment: {e}", file=sys.stderr)
+
+            elif attach_path_in:
+                src_p = Path(attach_path_in).expanduser().resolve()
+                if src_p.exists() and src_p.is_file():
+                    name_l = src_p.name.lower()
+                    if name_l.endswith((".tar.xz", ".tar.gz", ".tar.bz2", ".tar.zst")):
+                        ext = "." + ".".join(src_p.name.split(".")[-2:])
+                    else:
+                        ext = src_p.suffix or ".bin"
+                    att_fname = f"{frm}-{to}-{topic}-{ts}{ext}"
+                    att_target = att_dir / att_fname
+                    try:
+                        shutil.copy2(src_p, att_target)
+                        db_attach_path = f"{ATTACHMENTS_SUBDIR}/{att_fname}"
+                    except Exception as e:
+                        print(f"Warning: Failed to copy local attachment: {e}", file=sys.stderr)
+
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO messages (sender_id, receiver_id, sender_internal_id, receiver_internal_id, topic, message_timestamp, md_file_path, status) VALUES (?,?,?,?,?,?,?, 'new')",
-                (frm, to, sender_iid, receiver_iid, topic, ts, db_md_path),
+                "INSERT INTO messages (sender_id, receiver_id, sender_internal_id, receiver_internal_id, topic, message_timestamp, md_file_path, attachment_path, status) VALUES (?,?,?,?,?,?,?,?, 'new')",
+                (frm, to, sender_iid, receiver_iid, topic, ts, db_md_path, db_attach_path),
             )
             new_id = cur.lastrowid
             conn.commit()
