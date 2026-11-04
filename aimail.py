@@ -1527,6 +1527,7 @@ function connectSSE() {
       const data = JSON.parse(e.data);
       if (data.type === 'refresh') {
         await loadMessages();
+        renderSidebar();
         renderList();
         if (selectedId) await refreshDetail(selectedId);
       }
@@ -1550,31 +1551,39 @@ function setConn(ok) {
 // ════════════════════════════════════════════════════════
 function getFiltered() {
   let msgs = allMessages;
+
   if (currentAgent) {
-    msgs = msgs.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
-  }
-  if (currentTab === 'inbox') {
-    msgs = msgs.filter(m => m.receiver_id === selfUser || currentAgent === null
-      ? (selfUser ? m.receiver_id === selfUser : true)
-      : msgs);
-    // If no selfUser context, inbox = all with status new/processing
-    if (!selfUser) msgs = allMessages.filter(m => ['new','processing'].includes(m.status));
-    else msgs = allMessages.filter(m => m.receiver_id === selfUser);
-    if (currentAgent) msgs = msgs.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
-  } else if (currentTab === 'sent') {
-    if (selfUser) msgs = allMessages.filter(m => m.sender_id === selfUser);
-    else msgs = allMessages.filter(m => m.status === 'replied');
-    if (currentAgent) msgs = msgs.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
+    if (currentTab === 'inbox') {
+      msgs = allMessages.filter(m => m.receiver_id === currentAgent);
+    } else if (currentTab === 'sent') {
+      msgs = allMessages.filter(m => m.sender_id === currentAgent);
+    } else { // 'all'
+      msgs = allMessages.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
+    }
   } else {
-    msgs = allMessages;
-    if (currentAgent) msgs = msgs.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent);
+    if (currentTab === 'inbox') {
+      if (selfUser) {
+        msgs = allMessages.filter(m => m.receiver_id === selfUser);
+      } else {
+        msgs = allMessages.filter(m => ['new', 'processing'].includes(m.status));
+      }
+    } else if (currentTab === 'sent') {
+      if (selfUser) {
+        msgs = allMessages.filter(m => m.sender_id === selfUser);
+      } else {
+        msgs = allMessages.filter(m => m.status === 'replied');
+      }
+    } else { // 'all'
+      msgs = allMessages;
+    }
   }
+
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
     msgs = msgs.filter(m =>
-      m.topic.toLowerCase().includes(q) ||
-      m.sender_id.toLowerCase().includes(q) ||
-      m.receiver_id.toLowerCase().includes(q)
+      (m.topic && m.topic.toLowerCase().includes(q)) ||
+      (m.sender_id && m.sender_id.toLowerCase().includes(q)) ||
+      (m.receiver_id && m.receiver_id.toLowerCase().includes(q))
     );
   }
   return msgs;
@@ -1585,25 +1594,33 @@ function getFiltered() {
 // ════════════════════════════════════════════════════════
 function renderSidebar() {
   // Update counts
-  document.getElementById('cnt-inbox').textContent =
-    selfUser ? allMessages.filter(m => m.receiver_id === selfUser).length : allMessages.filter(m => ['new','processing'].includes(m.status)).length;
-  document.getElementById('cnt-sent').textContent =
-    selfUser ? allMessages.filter(m => m.sender_id === selfUser).length : 0;
-  document.getElementById('cnt-all').textContent = allMessages.length;
+  if (currentAgent) {
+    document.getElementById('cnt-inbox').textContent = allMessages.filter(m => m.receiver_id === currentAgent).length;
+    document.getElementById('cnt-sent').textContent = allMessages.filter(m => m.sender_id === currentAgent).length;
+    document.getElementById('cnt-all').textContent = allMessages.filter(m => m.sender_id === currentAgent || m.receiver_id === currentAgent).length;
+  } else {
+    document.getElementById('cnt-inbox').textContent = selfUser ? allMessages.filter(m => m.receiver_id === selfUser).length : allMessages.filter(m => ['new','processing'].includes(m.status)).length;
+    document.getElementById('cnt-sent').textContent = selfUser ? allMessages.filter(m => m.sender_id === selfUser).length : 0;
+    document.getElementById('cnt-all').textContent = allMessages.length;
+  }
 
   // Agent chips
   const agentSet = new Set();
   allUsers.forEach(u => agentSet.add(u.user_id));
-  allMessages.forEach(m => { agentSet.add(m.sender_id); agentSet.add(m.receiver_id); });
+  allMessages.forEach(m => {
+    if (m.sender_id) agentSet.add(m.sender_id);
+    if (m.receiver_id) agentSet.add(m.receiver_id);
+  });
 
   const container = document.getElementById('agent-chips');
+  if (!container) return;
   container.innerHTML = '';
 
   // "All agents" chip
   const allChip = document.createElement('div');
   allChip.className = 'agent-chip' + (currentAgent === null ? ' active' : '');
   allChip.innerHTML = '<div class="agent-avatar" style="background:var(--border)">★</div> All agents';
-  allChip.onclick = () => { currentAgent = null; renderAgentChips(); renderList(); };
+  allChip.onclick = () => selectAgent(null);
   container.appendChild(allChip);
 
   Array.from(agentSet).sort().forEach(uid => {
@@ -1612,43 +1629,52 @@ function renderSidebar() {
     chip.className = 'agent-chip' + (currentAgent === uid ? ' active' : '');
     const initials = uid.slice(0,2).toUpperCase();
     const hue = [...uid].reduce((a,c) => a + c.charCodeAt(0), 0) % 360;
-    chip.innerHTML = `<div class="agent-avatar" style="background:hsl(${hue},45%,30%)">${initials}</div> ${uid}`;
+    chip.innerHTML = `<div class="agent-avatar" style="background:hsl(${hue},45%,30%)">${initials}</div> ${esc(uid)}`;
     chip.title = userInfo ? userInfo.description : uid;
-    chip.onclick = () => { currentAgent = uid; renderAgentChips(); renderList(); };
+    chip.onclick = () => selectAgent(uid);
     container.appendChild(chip);
   });
 
-  // Update selfUser if we can detect "kuro" or "human" type
-  const human = allUsers.find(u => u.client_type === 'human');
-  if (human) selfUser = human.user_id;
+  // Detect human user as selfUser if not set
+  if (!selfUser) {
+    const human = allUsers.find(u => u.client_type === 'human');
+    if (human) selfUser = human.user_id;
+  }
 }
 
-function renderAgentChips() {
-  document.querySelectorAll('.agent-chip').forEach((el, i) => {
-    if (i === 0) el.className = 'agent-chip' + (currentAgent === null ? ' active' : '');
-    else {
-      const uid = el.querySelector('.agent-avatar').nextSibling.textContent.trim();
-      el.className = 'agent-chip' + (currentAgent === uid ? ' active' : '');
-    }
-  });
+function selectAgent(uid) {
+  currentAgent = uid;
+  updateListTitle();
+  renderSidebar();
+  renderList();
+}
+
+function updateListTitle() {
+  const titles = {inbox: 'Inbox', sent: 'Sent', all: 'All Messages'};
+  let title = titles[currentTab] || currentTab;
+  if (currentAgent) {
+    title += ' · ' + currentAgent;
+  }
+  const el = document.getElementById('list-title');
+  if (el) el.textContent = title;
 }
 
 // ════════════════════════════════════════════════════════
 //  RENDER — MESSAGE LIST
 // ════════════════════════════════════════════════════════
 function renderList() {
-  renderSidebar();
   const msgs = getFiltered();
   const container = document.getElementById('msg-list');
-  const empty = document.getElementById('empty-state');
+  if (!container) return;
 
   if (!msgs.length) {
-    container.innerHTML = '';
-    container.appendChild(empty);
-    empty.style.display = 'flex';
+    container.innerHTML = `
+      <div id="empty-state">
+        <div class="empty-icon">📭</div>
+        <span>No messages</span>
+      </div>`;
     return;
   }
-  empty.style.display = 'none';
 
   container.innerHTML = '';
   msgs.slice().reverse().forEach(m => {
@@ -1873,8 +1899,8 @@ function switchTab(el, tab) {
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   currentTab = tab;
-  const titles = {inbox:'Inbox', sent:'Sent', all:'All Messages'};
-  document.getElementById('list-title').textContent = titles[tab] || tab;
+  updateListTitle();
+  renderSidebar();
   renderList();
 }
 
