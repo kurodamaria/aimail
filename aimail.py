@@ -1421,11 +1421,11 @@ header .hright{display:flex;align-items:center;gap:10px}
         </div>
         <div id="detail-body" class="md-body"></div>
         <div id="reply-box">
-          <label>Quick Reply</label>
+          <label id="reply-box-label">Quick Reply</label>
           <div id="reply-row">
             <input id="reply-topic-input" type="text" placeholder="Topic (auto-filled)"/>
             <button class="btn sm" onclick="submitReply()">Send Reply</button>
-            <button class="btn sm danger" onclick="closeThread()">Close</button>
+            <button class="btn sm danger" id="btn-close-thread" onclick="closeThread()">Close</button>
           </div>
           <textarea id="reply-textarea" placeholder="Write your reply in markdown…"></textarea>
         </div>
@@ -1735,13 +1735,15 @@ function renderDetail(data) {
   // Actions
   const actions = document.getElementById('detail-actions');
   actions.innerHTML = '';
-  if (data.status !== 'closed') {
+  if (data.status === 'closed') {
+    addAction(actions, '🔓 Reopen', () => markMsg(data.id, 'processing'));
+  } else {
     if (data.status === 'new' || data.status === 'processing') {
       addAction(actions, '✓ Mark Read', () => markMsg(data.id, 'read'));
     }
     addAction(actions, '🔒 Close', () => markMsg(data.id, 'closed'));
   }
-  if (data.status !== 'replied') {
+  if (data.status !== 'replied' && data.status !== 'closed') {
     addAction(actions, '↩ Mark Replied', () => markMsg(data.id, 'replied'));
   }
 
@@ -1770,6 +1772,17 @@ function renderDetail(data) {
   const replyTopic = data.topic.endsWith('_reply') ? data.topic : data.topic + '_reply';
   document.getElementById('reply-topic-input').value = replyTopic;
   document.getElementById('reply-textarea').value = '';
+
+  // Bottom reply box close button & label
+  const btnClose = document.getElementById('btn-close-thread');
+  const lblReply = document.getElementById('reply-box-label');
+  if (data.status === 'closed') {
+    if (btnClose) btnClose.style.display = 'none';
+    if (lblReply) lblReply.innerHTML = 'Quick Reply <span style="font-size:11px;color:var(--muted);font-weight:normal">(Thread closed)</span>';
+  } else {
+    if (btnClose) btnClose.style.display = '';
+    if (lblReply) lblReply.textContent = 'Quick Reply';
+  }
 
   // Store for reply
   document.getElementById('reply-box').dataset.fromId = data.receiver_id;
