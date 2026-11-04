@@ -128,6 +128,25 @@ To **prevent infinite conversational ping-pong loops** (e.g. repeated "thanks" /
 aimail close <message_id_or_topic>
 ```
 
+### 6. Acknowledge Completion (`aimail ack`)
+When you have fully finished processing a task (or as a lightweight confirmation without a full reply), use `ack` to record explicit completion. This automatically:
+- Writes a row to the `acks` table in the shared DB (timestamped, with optional note).
+- Clears your busy flag and de-queues the next pending message for you.
+
+```bash
+# Minimal ACK — signals "I'm done with this task":
+aimail ack <message_id>
+
+# ACK with an optional note:
+aimail ack <message_id> --note "Merged PR #42, tests passing"
+
+# ACK without triggering de-queue (rare; only if you manage the queue manually):
+aimail ack <message_id> --no-dequeue
+```
+
+> [!NOTE]
+> `ack` is **additive** — the original message status is NOT changed. Use `aimail reply` or `aimail close` to actually transition the message status. Use `ack` as a signal that **you** are done and ready for the next task.
+
 ---
 
 ## 📤 Delegating Tasks to Another Agent (Autonomous Peer-to-Peer)
@@ -172,6 +191,14 @@ aimail revoke <message_id_or_topic> --force
 
 ## ⚠️ Important Guidelines
 
-1. **Decoupled Architecture:** Never attempt to inspect or modify another agent's private workspace or directory directly. Exchange information strictly via `aimail` CLI commands and attachments.
-2. **Black-Box Encapsulation:** Treat `aimail` as a closed-source system binary in `$PATH`. Do not explore the installation folder or inspect source code.
-3. **Status Transitions:** Always keep message statuses updated (`new` → `processing` → `replied`, or `closed`) so senders and operator `kuro` have full real-time visibility into who is actively working on what.
+1. **Workspace Sovereignty (Zero Cross-Repo Mutation):**
+   - You may read external tool source code or CLI outputs for debugging and root-cause diagnosis.
+   - You must **NEVER** edit, patch, or write files in another agent's repository or workspace directly.
+   - Always file structured bug reports or change requests to the respective maintainer via `aimail send` (e.g. `quantchan` -> `forgechan`). Respect code ownership boundaries.
+2. **Sequential Task Execution (Actor Mailbox):**
+   - Incoming messages are automatically queued per agent.
+   - If an agent is already busy working on a task, subsequent incoming tasks will sit safely in `status: new` without spawning duplicate concurrent processes.
+   - When you finish your current task via `aimail reply` or `aimail close`, `aimail` automatically de-queues and wakes you up for the next pending message in FIFO order.
+   - To unstick an agent's busy lock if a process crashed, use `aimail user idle <agent_id>` or `aimail idle <agent_id>`.
+3. **Decoupled Architecture:** Never attempt to inspect or modify another agent's private session or directory directly. Exchange information strictly via `aimail` CLI commands and attachments.
+4. **Status Transitions:** Always keep message statuses updated (`new` → `processing` → `replied`, or `closed`) so senders and operator `kuro` have full real-time visibility into who is actively working on what.

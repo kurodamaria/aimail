@@ -12,8 +12,10 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from typing import Optional
 import uuid
 from pathlib import Path
+from typing import Optional
 
 DEFAULT_MESSAGES_DIR = Path.home() / "Desktop" / "aimail"
 MARKDOWN_SUBDIR = "markdown"
@@ -103,10 +105,26 @@ def init_db(db_path: Path):
                 conversation_id TEXT,
                 wakeup_cmd TEXT,
                 aliases TEXT DEFAULT '',
+                is_busy INTEGER DEFAULT 0,
+                busy_pid INTEGER DEFAULT NULL,
+                busy_msg_id INTEGER DEFAULT NULL,
+                busy_since DATETIME DEFAULT NULL,
                 registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        # ACK table for explicit message confirmations
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS acks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                acker_id TEXT NOT NULL,
+                msg_id INTEGER NOT NULL,
+                note TEXT,
+                ack_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(acker_id, msg_id)
+            );
+        """)
+
         # Backward-compatible column migration
         cursor.execute("PRAGMA table_info(users)")
         existing_cols = {row[1] for row in cursor.fetchall()}
@@ -120,6 +138,14 @@ def init_db(db_path: Path):
             cursor.execute("ALTER TABLE users ADD COLUMN internal_id TEXT;")
         if "aliases" not in existing_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN aliases TEXT DEFAULT '';")
+        if "is_busy" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN is_busy INTEGER DEFAULT 0;")
+        if "busy_pid" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN busy_pid INTEGER DEFAULT NULL;")
+        if "busy_msg_id" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN busy_msg_id INTEGER DEFAULT NULL;")
+        if "busy_since" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN busy_since DATETIME DEFAULT NULL;")
 
         # Backfill internal_id for existing users
         cursor.execute("SELECT user_id FROM users WHERE internal_id IS NULL OR internal_id = ''")
@@ -496,6 +522,18 @@ def cmd_mark(args):
     else:
         print(f"Message '{target}' marked as '{new_status}'.")
 
+    # If marked as processing, record busy state for receiver
+    if new_status == "processing":
+        conn_u = get_connection(messages_dir)
+        cur_u = conn_u.cursor()
+        cur_u.execute("""
+            UPDATE users
+            SET is_busy = 1, busy_msg_id = ?, busy_since = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        """, (msg_row["id"], msg_row["receiver_id"]))
+        conn_u.commit()
+        conn_u.close()
+
     # If marked as replied, wake up the original sender
     if new_status == "replied" and not getattr(args, "no_wakeup", False):
         trigger_wakeup(
@@ -507,6 +545,11 @@ def cmd_mark(args):
             attachment=msg_row["attachment_path"],
             msg_id=msg_row["id"]
         )
+
+    # When a message reaches a terminal status (replied, closed, failed),
+    # check if the receiver has more queued messages waiting!
+    if new_status in ("replied", "closed", "failed"):
+        check_and_dequeue_next(messages_dir, msg_row["receiver_id"])
 
 
 def cmd_close(args):
@@ -635,18 +678,64 @@ def cmd_show(args):
         print(f"\nWarning: File {file_path} not found on disk.")
 
 
-def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messages_dir: Path, attachment: str = None, msg_id: int = None):
+def check_user_busy(conn, user_id: str) -> tuple[bool, Optional[sqlite3.Row]]:
+    """Check if an agent is currently busy. Auto-heals stale locks if process is dead."""
+    row = resolve_user(conn, user_id)
+    if not row:
+        return False, None
+
+    canonical_receiver = row["user_id"]
+    client_type = (row["client_type"] or "agy").lower()
+
+    # Humans are never blocked or queued by busy state
+    if client_type == "human" or canonical_receiver == "kuro":
+        return False, row
+
+    # Check is_busy flag
+    if not row["is_busy"]:
+        return False, row
+
+    # If marked busy, verify if the process is actually still alive
+    pid = row["busy_pid"]
+    if pid:
+        try:
+            os.kill(pid, 0)
+            return True, row  # Process is running!
+        except OSError:
+            # Process died or was killed! Auto-heal stale lock
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE users
+                SET is_busy = 0, busy_pid = NULL, busy_msg_id = NULL, busy_since = NULL
+                WHERE user_id = ?
+            """, (canonical_receiver,))
+            conn.commit()
+            return False, row
+
+    return False, row
+
+
+def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messages_dir: Path, attachment: str = None, msg_id: int = None, force: bool = False):
     conn = get_connection(messages_dir)
     row = resolve_user(conn, receiver)
-    conn.close()
 
     if not row:
+        conn.close()
         return
 
     canonical_receiver = row["user_id"]
     client_type = (row["client_type"] or "agy").lower()
     conv_id = row["conversation_id"]
     wakeup_template = row["wakeup_cmd"]
+
+    # Check if agent is currently busy (unless human or force=True)
+    if not force:
+        is_busy, busy_row = check_user_busy(conn, canonical_receiver)
+        if is_busy:
+            busy_info = f"message #{busy_row['busy_msg_id']}" if busy_row['busy_msg_id'] else "a task"
+            print(f"Notice: Agent '{canonical_receiver}' is currently BUSY processing {busy_info}. Message #{msg_id} queued in inbox.")
+            conn.close()
+            return
 
     prompt = f"New aimail received from {sender} on topic '{topic}'. Check inbox with 'aimail show {topic}', mark it with 'aimail mark {topic} --status processing', and reply with 'aimail reply' when done."
     escaped_prompt = prompt.replace('"', '\\"')
@@ -686,16 +775,98 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
 
     if final_cmd:
         try:
-            subprocess.Popen(
-                final_cmd,
+            # Prefix with 'exec ' so the shell replaces itself and proc.pid is the true child process PID
+            cmd_to_run = f"exec {final_cmd}" if not final_cmd.startswith("exec ") else final_cmd
+            proc = subprocess.Popen(
+                cmd_to_run,
                 shell=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True
             )
-            print(f"Triggered background wakeup for '{canonical_receiver}'.")
+
+            # Record busy state for autonomous agents/scripts
+            if client_type != "human" and canonical_receiver != "kuro":
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE users
+                    SET is_busy = 1, busy_pid = ?, busy_msg_id = ?, busy_since = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                """, (proc.pid, msg_id, canonical_receiver))
+                conn.commit()
+
+            print(f"Triggered background wakeup for '{canonical_receiver}' (PID: {proc.pid}).")
         except Exception as e:
             print(f"Warning: Failed to execute wakeup for '{canonical_receiver}': {e}", file=sys.stderr)
+
+    conn.close()
+
+
+def check_and_dequeue_next(messages_dir: Path, user_id: str):
+    """
+    Called when an agent completes a task (via reply, close, or mark done).
+    Checks if there are queued messages with status 'new' for this agent.
+    If yes: triggers wakeup for the oldest 'new' message in FIFO order.
+    If no: marks the agent as idle.
+    """
+    if not user_id:
+        return
+
+    conn = get_connection(messages_dir)
+    user_row = resolve_user(conn, user_id)
+    if not user_row:
+        conn.close()
+        return
+
+    canonical_user = user_row["user_id"]
+    client_type = (user_row["client_type"] or "agy").lower()
+
+    if client_type == "human" or canonical_user == "kuro":
+        conn.close()
+        return
+
+    cur = conn.cursor()
+    # Check for oldest pending 'new' message for this user
+    cur.execute("""
+        SELECT * FROM messages
+        WHERE (receiver_id = ? OR receiver_internal_id = ?)
+          AND status = 'new'
+        ORDER BY id ASC
+        LIMIT 1
+    """, (canonical_user, user_row["internal_id"]))
+    next_msg = cur.fetchone()
+
+    if next_msg:
+        # Clear busy flags first so trigger_wakeup doesn't reject it
+        cur.execute("""
+            UPDATE users
+            SET is_busy = 0, busy_pid = NULL, busy_msg_id = NULL, busy_since = NULL
+            WHERE user_id = ?
+        """, (canonical_user,))
+        conn.commit()
+        conn.close()
+
+        print(f"Queue: De-queuing next pending message #{next_msg['id']} ('{next_msg['topic']}') for '{canonical_user}'.")
+        trigger_wakeup(
+            receiver=canonical_user,
+            sender=next_msg["sender_id"],
+            topic=next_msg["topic"],
+            file_path=next_msg["md_file_path"],
+            messages_dir=messages_dir,
+            attachment=next_msg["attachment_path"],
+            msg_id=next_msg["id"],
+            force=True
+        )
+    else:
+        # No more pending messages! Set to IDLE
+        cur.execute("""
+            UPDATE users
+            SET is_busy = 0, busy_pid = NULL, busy_msg_id = NULL, busy_since = NULL
+            WHERE user_id = ?
+        """, (canonical_user,))
+        conn.commit()
+        conn.close()
+        print(f"Queue: Agent '{canonical_user}' is now IDLE (queue empty).")
 
 
 def cmd_send(args):
@@ -791,6 +962,48 @@ def cmd_send(args):
                 print(f"Warning: Failed to erase original attachment: {e}", file=sys.stderr)
 
 
+def cmd_ack(args):
+    """Explicitly acknowledge a message, recording that the receiver has finished processing it."""
+    messages_dir = Path(args.dir).resolve()
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    target = args.target
+    if target.isdigit():
+        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
+    else:
+        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
+    msg_row = cursor.fetchone()
+
+    if not msg_row:
+        print(f"Error: Message '{target}' not found.", file=sys.stderr)
+        conn.close()
+        sys.exit(1)
+
+    acker_id = getattr(args, "as_user", None) or msg_row["receiver_id"]
+    note = getattr(args, "note", None)
+
+    try:
+        cursor.execute("""
+            INSERT INTO acks (acker_id, msg_id, note, ack_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(acker_id, msg_id) DO UPDATE SET
+                note = COALESCE(excluded.note, acks.note),
+                ack_at = CURRENT_TIMESTAMP
+        """, (acker_id, msg_row["id"], note))
+        conn.commit()
+        print(f"✓ ACK recorded: message #{msg_row['id']} ('{msg_row['topic']}') acknowledged by '{acker_id}'.")
+    except Exception as e:
+        print(f"Error recording ACK: {e}", file=sys.stderr)
+        conn.close()
+        sys.exit(1)
+
+    # Also trigger dequeue for the acker so the next message starts
+    conn.close()
+    if not getattr(args, "no_dequeue", False):
+        check_and_dequeue_next(messages_dir, acker_id)
+
+
 def cmd_reply(args):
     messages_dir = Path(args.dir).resolve()
     conn = get_connection(messages_dir)
@@ -835,6 +1048,7 @@ def cmd_reply(args):
     args.timestamp = getattr(args, "timestamp", None)
 
     cmd_send(args)
+    check_and_dequeue_next(messages_dir, original_receiver)
 
 
 def cmd_extract(args):
@@ -1069,6 +1283,25 @@ def cmd_user(args):
         conn.commit()
         print(f"User '{user_id}' ({client_type}) registered/updated successfully.")
 
+    elif action in ("idle", "reset-busy"):
+        target_id = args.id.strip()
+        user = resolve_user(conn, target_id)
+        if not user:
+            print(f"Error: User '{target_id}' not found.", file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+        canonical = user["user_id"]
+        cursor.execute("""
+            UPDATE users
+            SET is_busy = 0, busy_pid = NULL, busy_msg_id = NULL, busy_since = NULL
+            WHERE user_id = ?
+        """, (canonical,))
+        conn.commit()
+        conn.close()
+        print(f"✓ Agent '{canonical}' reset to IDLE.")
+        check_and_dequeue_next(messages_dir, canonical)
+        return
+
     elif action == "rename":
         old_identifier = args.old_name.strip()
         new_name = args.new_name.strip()
@@ -1216,36 +1449,57 @@ def cmd_user(args):
         is_verbose = getattr(args, "verbose", False)
         style = getattr(args, "style", None)
 
+        def compute_state(r):
+            c_type = (r["client_type"] or "agy").lower()
+            if c_type == "human" or r["user_id"] == "kuro":
+                return "idle"
+            if r["is_busy"]:
+                pid = r["busy_pid"]
+                if pid:
+                    try:
+                        os.kill(pid, 0)
+                        return f"busy (#{r['busy_msg_id']})" if r["busy_msg_id"] else "busy"
+                    except OSError:
+                        # Auto-heal
+                        cur_fix = conn.cursor()
+                        cur_fix.execute("UPDATE users SET is_busy=0, busy_pid=NULL, busy_msg_id=NULL, busy_since=NULL WHERE user_id=?", (r["user_id"],))
+                        conn.commit()
+                        return "idle"
+                return f"busy (#{r['busy_msg_id']})" if r["busy_msg_id"] else "busy"
+            return "idle"
+
         if is_verbose:
-            headers = ["USER ID", "CLIENT", "CONVERSATION ID", "DESCRIPTION", "CAPABILITIES"]
+            headers = ["USER ID", "CLIENT", "STATE", "CONVERSATION ID", "DESCRIPTION", "CAPABILITIES"]
             data = []
             for r in rows:
                 c_type = r["client_type"] or "agy"
                 conv = r["conversation_id"] or "-"
-                data.append([r["user_id"], c_type, conv, r["description"], r["keywords"]])
+                state = compute_state(r)
+                data.append([r["user_id"], c_type, state, conv, r["description"], r["keywords"]])
             table_str = format_table(
                 headers=headers,
                 rows=data,
-                elastic_cols=[3, 4],
-                min_widths=[11, 8, 20, 25, 20],
-                max_widths=[14, 8, 38, None, None],
+                elastic_cols=[4, 5],
+                min_widths=[11, 8, 8, 20, 22, 16],
+                max_widths=[14, 8, 12, 38, None, None],
                 style=style
             )
         else:
-            headers = ["USER ID", "CLIENT", "SESSION", "DESCRIPTION", "CAPABILITIES"]
+            headers = ["USER ID", "CLIENT", "STATE", "SESSION", "DESCRIPTION", "CAPABILITIES"]
             data = []
             for r in rows:
                 c_type = r["client_type"] or "agy"
                 conv = r["conversation_id"] or "-"
+                state = compute_state(r)
                 if conv != "-" and len(conv) > 10:
                     conv = conv[:8] + "…"
-                data.append([r["user_id"], c_type, conv, r["description"], r["keywords"]])
+                data.append([r["user_id"], c_type, state, conv, r["description"], r["keywords"]])
             table_str = format_table(
                 headers=headers,
                 rows=data,
-                elastic_cols=[3, 4],
-                min_widths=[11, 8, 9, 18, 14],
-                max_widths=[14, 8, 10, None, None],
+                elastic_cols=[4, 5],
+                min_widths=[11, 8, 8, 9, 16, 12],
+                max_widths=[14, 8, 12, 10, None, None],
                 style=style
             )
 
@@ -2761,7 +3015,21 @@ function toast(msg, type = 'info', ms = 3000) {
             conn = self._db()
             cur = conn.cursor()
             cur.execute("SELECT * FROM users ORDER BY user_id ASC")
-            rows = [dict(r) for r in cur.fetchall()]
+            raw_rows = [dict(r) for r in cur.fetchall()]
+            rows = []
+            for r in raw_rows:
+                # Auto-heal stale busy locks if PID has exited
+                if r.get("is_busy") and r.get("busy_pid"):
+                    try:
+                        os.kill(r["busy_pid"], 0)
+                    except OSError:
+                        r["is_busy"] = 0
+                        r["busy_pid"] = None
+                        r["busy_msg_id"] = None
+                        r["busy_since"] = None
+                        cur.execute("UPDATE users SET is_busy=0, busy_pid=NULL, busy_msg_id=NULL, busy_since=NULL WHERE user_id=?", (r["user_id"],))
+                rows.append(r)
+            conn.commit()
             conn.close()
             self._send_json(rows)
 
@@ -2779,14 +3047,23 @@ function toast(msg, type = 'info', ms = 3000) {
                 return
             conn = self._db()
             cur = conn.cursor()
-            cur.execute("UPDATE messages SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                        (new_status, mid))
-            if cur.rowcount == 0:
+            cur.execute("SELECT receiver_id FROM messages WHERE id=?", (mid,))
+            msg_r = cur.fetchone()
+            if not msg_r:
                 conn.close()
                 self._send_json({"error": "not found"}, 404)
                 return
+            receiver_id = msg_r["receiver_id"]
+
+            cur.execute("UPDATE messages SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (new_status, mid))
             conn.commit()
             conn.close()
+
+            # Trigger de-queue if terminal status
+            if new_status in ("replied", "closed", "failed"):
+                check_and_dequeue_next(messages_dir, receiver_id)
+
             self._send_json({"ok": True, "id": mid, "status": new_status})
 
         # ── API: POST /api/send ───────────────────────────────────────────────
@@ -3010,6 +3287,13 @@ def main():
     p_close = subparsers.add_parser("close", help="Mark a message thread as 'closed' without triggering any wakeup (prevents reply loops)")
     p_close.add_argument("target", help="Message ID or filename to close")
 
+    # ack
+    p_ack = subparsers.add_parser("ack", help="Explicitly acknowledge a message, confirming you have finished processing it")
+    p_ack.add_argument("target", help="Message ID or filename to acknowledge")
+    p_ack.add_argument("--as", dest="as_user", help="ACK as a specific user ID (defaults to message receiver)")
+    p_ack.add_argument("--note", "-n", help="Optional short note to store with the ACK")
+    p_ack.add_argument("--no-dequeue", action="store_true", help="Skip auto-dequeue of next pending message after ACK")
+
     # reply
     p_reply = subparsers.add_parser("reply", help="Reply to a message, automatically marking original as replied and waking sender")
     p_reply.add_argument("target", help="Original message ID or filename to reply to")
@@ -3104,6 +3388,14 @@ def main():
     p_u_ren.add_argument("old_name", help="Current username, alias, or internal ID (e.g. antigravity)")
     p_u_ren.add_argument("new_name", help="New username handle (e.g. gymchan)")
 
+    # user idle
+    p_u_idle = p_user_sub.add_parser("idle", help="Reset an agent's busy lock to IDLE and de-queue any pending messages")
+    p_u_idle.add_argument("id", help="Agent user ID (e.g. forgechan, oschan)")
+
+    # shortcut: aimail idle <id>
+    p_idle = subparsers.add_parser("idle", help="Shortcut to reset an agent's busy lock (same as 'aimail user idle <id>')")
+    p_idle.add_argument("id", help="Agent user ID (e.g. forgechan, oschan)")
+
     # shortcut: aimail rename <old> <new>
     p_ren = subparsers.add_parser("rename", help="Shortcut to rename an agent user (same as 'aimail user rename <old> <new>')")
     p_ren.add_argument("old_name", help="Current username, alias, or internal ID (e.g. antigravity)")
@@ -3165,10 +3457,15 @@ def main():
         cmd_extract(args)
     elif args.command == "close":
         cmd_close(args)
+    elif args.command == "ack":
+        cmd_ack(args)
     elif args.command == "revoke":
         cmd_revoke(args)
     elif args.command == "rename":
         args.user_action = "rename"
+        cmd_user(args)
+    elif args.command == "idle":
+        args.user_action = "idle"
         cmd_user(args)
     elif args.command == "user":
         cmd_user(args)
