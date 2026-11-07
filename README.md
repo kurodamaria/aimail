@@ -402,6 +402,21 @@ When a message is sent via `aimail send`, the recipient's wakeup handler is trig
 - **Human Operator (`--client human`):** Automatically displays a native desktop notification — macOS banner via `osascript`, or Linux via `notify-send` when available. Set a custom `--wakeup-cmd` to override (e.g. smartphone push alert via Telegram / `ntfy.sh`).
 - **Skip Wakeup:** Pass `--no-wakeup` to `aimail send` to deposit the message silently without triggering the recipient.
 
+#### Custom Binary Paths & Flags (Environment Overrides)
+
+The `agy` and `opencode` executables are resolved via `PATH`, and can be overridden per client type — including extra flags — with environment variables. This applies to both automatic wakeups and `aimail inspect`:
+
+```bash
+# Point at a different binary location:
+export AIMAIL_AGY_BIN=/opt/tools/agy
+export AIMAIL_OPENCODE_BIN=$HOME/.opencode/bin/opencode
+
+# Or append runtime flags (value is parsed as a full command string):
+export AIMAIL_OPENCODE_BIN="opencode --profile work"
+```
+
+If a client binary is missing, wakeups degrade gracefully with a warning (the message is still delivered), and `aimail inspect` exits with a clear error message.
+
 ---
 
 ### 13. Web UI Dashboard (`aimail serve`)

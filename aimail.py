@@ -8,6 +8,7 @@ import argparse
 import datetime
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -705,6 +706,40 @@ def check_user_busy(conn, user_id: str) -> tuple[bool, Optional[sqlite3.Row]]:
     return False, row
 
 
+AGENT_BINARIES = {
+    "agy": "agy",
+    "opencode": "opencode",
+}
+
+
+def resolve_binary(client_type: str) -> str:
+    """
+    Resolve the executable command for an agent client runtime.
+
+    Honors the AIMAIL_<TYPE>_BIN environment variable (e.g. AIMAIL_AGY_BIN,
+    AIMAIL_OPENCODE_BIN) which may contain a full command string with extra
+    flags, such as: AIMAIL_OPENCODE_BIN="opencode --profile work".
+    Falls back to the well-known binary name resolved via PATH.
+    """
+    env_key = f"AIMAIL_{client_type.upper()}_BIN"
+    override = os.environ.get(env_key, "").strip()
+    if override:
+        first_token = shlex.split(override)[0] if shlex.split(override) else override
+        if shutil.which(first_token) is None and not Path(first_token).exists():
+            raise FileNotFoundError(
+                f"{env_key} is set to '{override}', but its executable '{first_token}' was not found."
+            )
+        return override
+
+    exe = AGENT_BINARIES.get(client_type, client_type)
+    if shutil.which(exe) is None:
+        raise FileNotFoundError(
+            f"Client binary '{exe}' for client type '{client_type}' was not found in PATH. "
+            f"Install it or set {env_key} to a custom command."
+        )
+    return exe
+
+
 def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messages_dir: Path, attachment: str = None, msg_id: int = None, force: bool = False):
     conn = get_connection(messages_dir)
     row = resolve_user(conn, receiver)
@@ -752,13 +787,21 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
             wakeup_template
         )
     elif conv_id:
-        if client_type == "agy":
-            final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
-        elif client_type == "opencode":
-            session_id = conv_id if conv_id.startswith("ses") else f"ses_{conv_id}"
-            final_cmd = f'opencode run --auto -s "{session_id}" "{escaped_prompt}"'
-        else:
-            final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
+        try:
+            bin_cmd = resolve_binary(client_type)
+            if client_type == "agy":
+                final_cmd = f'{bin_cmd} --conversation "{conv_id}" -p "{escaped_prompt}"'
+            elif client_type == "opencode":
+                session_id = conv_id if conv_id.startswith("ses") else f"ses_{conv_id}"
+                final_cmd = f'{bin_cmd} run --auto -s "{session_id}" "{escaped_prompt}"'
+            else:
+                print(
+                    f"Warning: Client type '{client_type}' has a conversation ID but no wakeup command "
+                    f"and does not support automatic resume. Register with --wakeup-cmd or clear --conv-id.",
+                    file=sys.stderr
+                )
+        except FileNotFoundError as e:
+            print(f"Warning: {e}", file=sys.stderr)
     elif client_type == "human":
         escaped_msg = f"New message from {sender} on '{topic}'".replace('"', '\\"')
         if sys.platform == "darwin":
@@ -1215,12 +1258,20 @@ def cmd_inspect(args):
         sys.exit(1)
 
     if client_type == "agy":
-        cmd_args = ["agy", f"--conversation={conv_id}"]
-        display_cmd = f"agy --conversation={conv_id}"
+        try:
+            cmd_args = shlex.split(resolve_binary("agy")) + [f"--conversation={conv_id}"]
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        display_cmd = " ".join(cmd_args)
     elif client_type == "opencode":
         session_id = conv_id if conv_id.startswith("ses") else f"ses_{conv_id}"
-        cmd_args = ["opencode", "-s", session_id]
-        display_cmd = f"opencode -s {session_id}"
+        try:
+            cmd_args = shlex.split(resolve_binary("opencode")) + ["-s", session_id]
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        display_cmd = " ".join(cmd_args)
     else:
         print(f"Error: Client type '{client_type}' does not support interactive TUI inspection.", file=sys.stderr)
         sys.exit(1)
