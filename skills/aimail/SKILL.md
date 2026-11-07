@@ -1,7 +1,7 @@
 ---
 name: aimail
 description: >-
-  Use this skill to communicate asynchronously with other AI agents or the real human user (kuro)
+  Use this skill to communicate asynchronously with other AI agents or the human operator
   via the aimail messaging system. Activate this skill whenever you need to delegate tasks to
   another specialized agent, check your own agent inbox for incoming tasks, send completion notices,
   or discover which agents exist and what capabilities they offer.
@@ -9,7 +9,7 @@ description: >-
 
 # aimail: Asynchronous Multi-Agent Communication
 
-`aimail` is a local-first message bus and task queue for AI agents and the human operator (`kuro`). It enables decoupled collaboration across different workspaces and processes using Markdown task instructions and paired binary attachments.
+`aimail` is a local-first message bus and task queue for AI agents and their human operator. It enables decoupled collaboration across different workspaces and processes using Markdown task instructions and paired binary attachments.
 
 > [!IMPORTANT]
 > **`aimail` is a pre-installed, standalone system CLI utility in `$PATH`.**
@@ -22,13 +22,12 @@ description: >-
 
 ## 👥 Understanding Users in aimail
 
-Always query the user directory before dispatching messages:
+Always query the user directory before dispatching messages — run `aimail users` first. The registry starts empty on a fresh install and contains only the users explicitly registered on this machine:
 
-- **`kuro` (REAL HUMAN USER):** `kuro` is the human developer, owner, and operator.  
-  - Send messages to `kuro` when you need human review, feedback, architectural decisions, or high-level milestone notifications.
-  - Do not treat `kuro` as an automated AI process.
-- **`oschan` (AI ASSISTANT):** General-purpose background task execution, code review, Python, and testing.
-- **Other Agents:** Agents register themselves with specific capability keywords.
+- **Human operator:** Exactly one user is registered with `--client human` (find them via `aimail users` or `aimail user find "human"`). This is the person who owns this machine.
+  - Send messages to the human operator when you need human review, feedback, architectural decisions, or high-level milestone notifications.
+  - Do not treat the human operator as an automated AI process.
+- **Agents:** Registered with client types `agy`, `opencode`, or `custom`, each with capability keywords describing what they can do.
 
 ### Discovering Agents & Capabilities
 
@@ -65,7 +64,7 @@ aimail inspect 15 --sender
 
 # Jump directly into an agent's interactive TUI by name (agy or opencode)
 aimail inspect opencode
-aimail inspect gymchan
+aimail inspect coder
 
 # Rename an agent handle (preserves immutable internal ID, aliases, and message history):
 aimail rename <old_name> <new_name>
@@ -78,7 +77,7 @@ aimail inspect 15 --window
 
 ## 📬 Receiving & Processing Incoming Tasks
 
-If you are an agent operating under an assigned ID (e.g. `oschan`):
+If you are an agent operating under an assigned ID (e.g. `coder`):
 
 ### 1. Check Inbox
 ```bash
@@ -104,7 +103,7 @@ aimail extract <message_id_or_topic> --out ./task_inputs
 ```
 
 ### 3. Claim Task & Mark as Processing
-As soon as you wake up and inspect the task, immediately mark it as `processing` so the operator (`kuro`) and the sender can monitor execution progress in real-time:
+As soon as you wake up and inspect the task, immediately mark it as `processing` so the human operator and the sender can monitor execution progress in real-time:
 ```bash
 aimail mark <message_id_or_topic> --status processing
 ```
@@ -153,7 +152,7 @@ aimail ack <message_id> --no-dequeue
 
 > [!TIP]
 > **Direct Agent-to-Agent Delegation:**
-> You do **NOT** need to ask human operator `kuro` to forward questions, code diffs, or tasks to other agents. You are empowered to communicate directly with peer agents (e.g. `gymchan` for TradingGym C++, `forgechan` for AlphaForge tooling, `oschan` for code review/automation). Query `aimail users` to discover peer capabilities and message them directly. The recipient agent will be automatically woken up in their own workspace, process your request, and reply back to your inbox.
+> You do **NOT** need to ask the human operator to forward questions, code diffs, or tasks to other agents. You are empowered to communicate directly with peer agents (e.g. a `coder` agent for code review/automation, a `buildbot` for builds, a `researcher` for analysis). Query `aimail users` to discover peer capabilities and message them directly. The recipient agent will be automatically woken up in their own workspace, process your request, and reply back to your inbox.
 
 When a task exceeds your current workspace scope or requires another specialist:
 
@@ -194,11 +193,11 @@ aimail revoke <message_id_or_topic> --force
 1. **Workspace Sovereignty (Zero Cross-Repo Mutation):**
    - You may read external tool source code or CLI outputs for debugging and root-cause diagnosis.
    - You must **NEVER** edit, patch, or write files in another agent's repository or workspace directly.
-   - Always file structured bug reports or change requests to the respective maintainer via `aimail send` (e.g. `quantchan` -> `forgechan`). Respect code ownership boundaries.
+   - Always file structured bug reports or change requests to the respective maintainer via `aimail send` (e.g. `tester` -> `coder`). Respect code ownership boundaries.
 2. **Sequential Task Execution (Actor Mailbox):**
    - Incoming messages are automatically queued per agent.
    - If an agent is already busy working on a task, subsequent incoming tasks will sit safely in `status: new` without spawning duplicate concurrent processes.
    - When you finish your current task via `aimail reply` or `aimail close`, `aimail` automatically de-queues and wakes you up for the next pending message in FIFO order.
    - To unstick an agent's busy lock if a process crashed, use `aimail user idle <agent_id>` or `aimail idle <agent_id>`.
 3. **Decoupled Architecture:** Never attempt to inspect or modify another agent's private session or directory directly. Exchange information strictly via `aimail` CLI commands and attachments.
-4. **Status Transitions:** Always keep message statuses updated (`new` → `processing` → `replied`, or `closed`) so senders and operator `kuro` have full real-time visibility into who is actively working on what.
+4. **Status Transitions:** Always keep message statuses updated (`new` → `processing` → `replied`, or `closed`) so senders and the human operator have full real-time visibility into who is actively working on what.

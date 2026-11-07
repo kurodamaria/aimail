@@ -174,16 +174,6 @@ def init_db(db_path: Path):
             WHERE receiver_internal_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE users.user_id = messages.receiver_id);
         """)
 
-        # Seed initial users if empty
-        cursor.execute("SELECT COUNT(*) FROM users")
-        if cursor.fetchone()[0] == 0:
-            cursor.executemany("""
-                INSERT INTO users (user_id, internal_id, description, keywords, client_type, conversation_id, wakeup_cmd)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, [
-                ("kuro", f"usr_{uuid.uuid4().hex[:10]}", "Real human user, developer, and system owner.", "human, developer, owner, operator, feedback, decisions", "human", None, 'osascript -e \'display notification "{prompt}" with title "aimail: message from {sender}"\''),
-                ("oschan", f"usr_{uuid.uuid4().hex[:10]}", "AI assistant and autonomous agent for background task execution, code review, and development.", "agent, python, coding, git, review, automation, testing", "agy", None, None)
-            ])
         conn.commit()
 
 
@@ -688,7 +678,7 @@ def check_user_busy(conn, user_id: str) -> tuple[bool, Optional[sqlite3.Row]]:
     client_type = (row["client_type"] or "agy").lower()
 
     # Humans are never blocked or queued by busy state
-    if client_type == "human" or canonical_receiver == "kuro":
+    if client_type == "human":
         return False, row
 
     # Check is_busy flag
@@ -769,9 +759,12 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
             final_cmd = f'opencode run --auto -s "{session_id}" "{escaped_prompt}"'
         else:
             final_cmd = f'agy --conversation "{conv_id}" -p "{escaped_prompt}"'
-    elif client_type == "human" or canonical_receiver == "kuro":
+    elif client_type == "human":
         escaped_msg = f"New message from {sender} on '{topic}'".replace('"', '\\"')
-        final_cmd = f'osascript -e \'display notification "{escaped_msg}" with title "aimail"\''
+        if sys.platform == "darwin":
+            final_cmd = f'osascript -e \'display notification "{escaped_msg}" with title "aimail"\''
+        elif shutil.which("notify-send"):
+            final_cmd = f'notify-send -a aimail "aimail" "{escaped_msg}"'
 
     if final_cmd:
         try:
@@ -786,7 +779,7 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
             )
 
             # Record busy state for autonomous agents/scripts
-            if client_type != "human" and canonical_receiver != "kuro":
+            if client_type != "human":
                 cur = conn.cursor()
                 cur.execute("""
                     UPDATE users
@@ -821,7 +814,7 @@ def check_and_dequeue_next(messages_dir: Path, user_id: str):
     canonical_user = user_row["user_id"]
     client_type = (user_row["client_type"] or "agy").lower()
 
-    if client_type == "human" or canonical_user == "kuro":
+    if client_type == "human":
         conn.close()
         return
 
@@ -1451,7 +1444,7 @@ def cmd_user(args):
 
         def compute_state(r):
             c_type = (r["client_type"] or "agy").lower()
-            if c_type == "human" or r["user_id"] == "kuro":
+            if c_type == "human":
                 return "idle"
             if r["is_busy"]:
                 pid = r["busy_pid"]

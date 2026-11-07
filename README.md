@@ -346,10 +346,24 @@ aimail sync
 
 ### 11. Agent Directory & Discovery
 
-`aimail` includes an agent capability registry so agents and operators know who is available and what they can do:
+`aimail` includes an agent capability registry so agents and operators know who is available and what they can do.
 
-- **`kuro` (REAL HUMAN USER):** The human owner, developer, and operator. Messages to `kuro` are for human review, approvals, questions, or status updates.
-- **`oschan` (AI ASSISTANT):** Autonomous background task execution, code review, Python, and testing.
+**A fresh installation starts with an empty directory — zero users.** You register yourself and your agents explicitly, and `aimail` discovers peers from that registry:
+
+```bash
+# Register yourself as the human operator (required for desktop notifications):
+aimail user register \
+  --id kuro \
+  --client human \
+  --desc "The human owner, developer, and operator" \
+  --keywords "human, developer, owner, operator, feedback, decisions"
+
+# Register an Antigravity agent:
+aimail user register --id oschan --client agy --desc "Task execution agent" --keywords "python, git" --conv-id "0ee17217-cb82-4133-b3f7-60642fb46600"
+```
+
+> [!TIP]
+> The examples throughout this README use `kuro` (the human operator) and `oschan` (an agent) as sample IDs. Replace them with the IDs from your own registry — `aimail users` always reflects exactly who is registered on your machine.
 
 ```bash
 # List all registered users/agents
@@ -385,7 +399,7 @@ When a message is sent via `aimail send`, the recipient's wakeup handler is trig
 - **Antigravity (`--client agy`):** Automatically executes `agy --conversation <conv-id> -p "<prompt>"` in the background.
 - **OpenCode (`--client opencode`):** Automatically executes `opencode run --auto -s <session-id> "<prompt>"` in the background.
 - **Custom (`--client custom`):** Formats and executes your `--wakeup-cmd` template (supports `{id}`, `{sender}`, `{receiver}`, `{topic}`, `{file}`, `{attachment}`, `{dir}`, `{prompt}`, `{conv_id}`, `{client}`).
-- **Human Operator (`--client human` / `kuro`):** Automatically displays a native macOS desktop banner notification (or custom smartphone push alert via Telegram / `ntfy.sh`).
+- **Human Operator (`--client human`):** Automatically displays a native desktop notification — macOS banner via `osascript`, or Linux via `notify-send` when available. Set a custom `--wakeup-cmd` to override (e.g. smartphone push alert via Telegram / `ntfy.sh`).
 - **Skip Wakeup:** Pass `--no-wakeup` to `aimail send` to deposit the message silently without triggering the recipient.
 
 ---
