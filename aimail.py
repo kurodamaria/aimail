@@ -35,12 +35,11 @@ INFORMATIONAL_TOPICS = {
     "hello", "hi", "hey", "ack", "ok", "okay", "thanks", "thank_you", "thx",
     "status", "ping", "fyi", "welcome", "noted", "roger", "greetings",
 }
-# Substrings that flip a short note back into an actionable request.
-REQUEST_MARKERS = (
-    "please", "could you", "can you", "would you", "need you", "i need",
-    "implement", "fix ", "review", "verify", "investigate", "analyze", "analyse",
-    "build", "create", "add ", "update ", "refactor", "provide", "send me",
-    "report", "check ", "todo", "action required", "help me",
+# Distinctive phrases that flip a short note into an actionable request.
+REQUEST_PHRASES = (
+    "please", "could you", "can you", "would you", "need you", "i need you",
+    "send me", "help me", "action required", "action item", "todo", "asap",
+    "deadline", "by eod", "let's ", "let us ",
 )
 MAX_INFORMATIONAL_CHARS = 320
 INFORMATIONAL_HINT = (
@@ -261,7 +260,11 @@ def topic_root(topic: str) -> str:
 
 
 def is_informational(topic, body="", has_attachment=False) -> bool:
-    """Heuristic: does this message look like a courtesy/status note that needs no reply?"""
+    """
+    Heuristic: does this message look like a courtesy/status note that needs no reply?
+    Best-effort and advisory — intentionally biased toward emitting the nudge, since the
+    informational-topic gate is the real filter and a missed nudge causes reply ping-pong.
+    """
     if has_attachment:
         return False
     if topic_root(topic) not in INFORMATIONAL_TOPICS:
@@ -269,7 +272,7 @@ def is_informational(topic, body="", has_attachment=False) -> bool:
     body_l = (body or "").strip().lower()
     if len(body_l) > MAX_INFORMATIONAL_CHARS:
         return False
-    if any(marker in body_l for marker in REQUEST_MARKERS):
+    if any(phrase in body_l for phrase in REQUEST_PHRASES):
         return False
     return True
 
@@ -628,10 +631,11 @@ def cmd_list(args):
     )
     print(table_str)
 
-    if sys.stdout.isatty() and any(
-        is_informational(r["topic"], "", bool(r["attachment_path"])) for r in rows
-    ):
-        print("\nnote: some listed messages look informational — prefer 'aimail close <id>' over 'reply'.")
+    if any(is_informational(r["topic"], "", bool(r["attachment_path"])) for r in rows):
+        print(
+            "note: some listed messages look informational — prefer 'aimail close <id>' over 'reply'.",
+            file=sys.stderr,
+        )
 
 
 def cmd_inbox(args):
@@ -966,7 +970,23 @@ def trigger_wakeup(receiver: str, sender: str, topic: str, file_path: str, messa
             conn.close()
             return
 
-    prompt = f"New aimail received from {sender} on topic '{topic}'. Check inbox with 'aimail show {topic}', mark it with 'aimail mark {topic} --status processing', and reply with 'aimail reply' when done."
+    if msg_id is not None:
+        # Reference the message by its unique ID so reply-topic collisions can't misroute it.
+        # Kept free of shell metacharacters (no quotes/#/parens) so it survives raw
+        # interpolation into --wakeup-cmd templates as well as quoted ones.
+        prompt = (
+            f"New aimail received from {sender} on topic {topic}, message {msg_id}. "
+            f"Check it with: aimail show {msg_id}. "
+            f"Mark it with: aimail mark {msg_id} --status processing. "
+            f"Reply with: aimail reply {msg_id} when done."
+        )
+    else:
+        prompt = (
+            f"New aimail received from {sender} on topic {topic}. "
+            f"Check inbox with: aimail show {topic}. "
+            f"Mark it with: aimail mark {topic} --status processing. "
+            f"Reply with: aimail reply when done."
+        )
     escaped_prompt = prompt.replace('"', '\\"')
 
     final_cmd = None
