@@ -16,7 +16,7 @@ description: >-
 > - **DO NOT** inspect, browse, locate, or run `ls` on internal system directories or mailbox files.
 > - **DO NOT** read, audit, or edit internal database files or implementation scripts.
 > - Treat `aimail` strictly as an opaque black-box command-line tool (like `git` or `curl`).
-> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail show`, `aimail inspect`, `aimail send`, `aimail reply`, `aimail close`, `aimail download`, `aimail extract`, `aimail revoke`, `aimail users`).
+> - Interact **exclusively** through documented `aimail` CLI subcommands (`aimail list`, `aimail inbox`, `aimail show`, `aimail inspect`, `aimail send`, `aimail reply`, `aimail close`, `aimail download`, `aimail extract`, `aimail revoke`, `aimail users`, `aimail route`).
 
 ---
 
@@ -37,6 +37,9 @@ aimail users
 
 # Search for an agent with specific skills (e.g. python, frontend, testing)
 aimail user find "<keyword>"
+
+# Rank candidates for a free-text need (keyword + description overlap):
+aimail user route "independently verify an ED gate"
 
 # Inspect an agent's full profile
 aimail user show <agent_id>
@@ -82,6 +85,9 @@ If you are an agent operating under an assigned ID (e.g. `coder`):
 ### 1. Check Inbox
 ```bash
 aimail list --to <my_id> --status new
+
+# Or a one-glance unread digest (pending new/processing, with ages):
+aimail inbox <my_id>
 ```
 
 ### 2. Inspect Task Details & Download/Extract Payloads
@@ -92,6 +98,12 @@ aimail show <message_id_or_topic>
 # Optionally save the markdown instructions directly to a local file:
 aimail show <message_id_or_topic> --out task_spec.md
 ```
+
+> [!TIP]
+> **Prefer the numeric message ID.** Wakeup prompts and `inbox`/`list` output include it, and it is
+> always unambiguous. Topics are reusable, so a repeated topic matches several messages — in that
+> case `aimail show <topic>` refuses to guess and lists the candidates, and you should pick by ID.
+> An exact topic match is always preferred over its `_reply` children.
 
 If an attachment is linked, you can either **download** the raw file or **extract** an archive cleanly into your local workspace without knowing internal mailbox paths:
 ```bash
@@ -127,6 +139,11 @@ To **prevent infinite conversational ping-pong loops** (e.g. repeated "thanks" /
 aimail close <message_id_or_topic>
 ```
 
+> [!NOTE]
+> `aimail show` and `aimail reply` already print a one-line hint when a message looks informational
+> (a `hello`/`ack`/`status` note with no attachment or request), and `aimail list` prints the same
+> hint on stderr — a reminder to prefer `aimail close` over a courtesy reply.
+
 ### 6. Acknowledge Completion (`aimail ack`)
 When you have fully finished processing a task (or as a lightweight confirmation without a full reply), use `ack` to record explicit completion. This automatically:
 - Writes a row to the `acks` table in the shared DB (timestamped, with optional note).
@@ -159,6 +176,9 @@ When a task exceeds your current workspace scope or requires another specialist:
 ### 1. Find the Right Agent
 ```bash
 aimail user find "database"
+
+# Or rank candidates for a free-text need (keyword + description overlap):
+aimail user route "who can independently verify a numerical gate"
 ```
 
 ### 2. Send the Task
@@ -172,6 +192,10 @@ aimail send --from <my_id> --to <target_agent> --topic <action_name> -f /path/to
 # With an attachment tarball
 aimail send --from <my_id> --to <target_agent> --topic <action_name> -f spec.md -a payload.tar.xz
 ```
+
+> [!NOTE]
+> Reusing a topic you have already sent prints a non-blocking notice; add `--force` to silence it
+> (useful in scripts). Replies reuse the thread topic by design and never warn.
 
 ### 3. Revoke / Unsend a Sent Message
 If you sent a task in error or need to recall it before (or after) processing:
@@ -201,3 +225,4 @@ aimail revoke <message_id_or_topic> --force
    - To unstick an agent's busy lock if a process crashed, use `aimail user idle <agent_id>` or `aimail idle <agent_id>`.
 3. **Decoupled Architecture:** Never attempt to inspect or modify another agent's private session or directory directly. Exchange information strictly via `aimail` CLI commands and attachments.
 4. **Status Transitions:** Always keep message statuses updated (`new` → `processing` → `replied`, or `closed`) so senders and the human operator have full real-time visibility into who is actively working on what.
+5. **Topic Hygiene:** Keep topics distinct per thread (e.g. `bugfix_42`, not `fix`). Topics are how you and others re-find a message; heavy reuse triggers the collision guard and forces ID-based lookups. A reply keeps the thread topic (`<topic>_reply`), so a topic with replies is never ambiguous when fetched by its own name.
