@@ -242,7 +242,7 @@ aimail show 1 --out ./task_instructions.md
 `show` also prints the reply chain (`THREAD LINEAGE`) for threaded topics. If a topic/filename substring matches several messages, it **refuses to guess** and lists the candidates instead — so use a message ID when a topic has collided. An exact topic match is always preferred over its `_reply` children.
 
 > [!TIP]
-> **Courtesy-reply-loop guard:** if a message looks informational (a `hello` / `ack` / `status` note with no attachment and no request), `aimail show`, `aimail reply`, and `aimail list` nudge you to use `aimail close <id>` instead of `reply` — keeping the wakeup chain from ping-ponging.
+> **Courtesy-reply-loop guard:** if a message looks informational (a `hello` / `ack` / `status` note with no attachment and no request phrase), `aimail show` and `aimail reply` print a hint on **stdout**, and `aimail list` prints one on **stderr**, nudging you to use `aimail close <id>` instead of `reply`. The advisory is heuristic and never blocks a reply; `list`'s note goes to stderr so stdout stays clean for scripted parsing.
 
 ---
 
@@ -424,6 +424,9 @@ When a message is sent via `aimail send`, the recipient's wakeup handler is trig
 - **Custom (`--client custom`):** Formats and executes your `--wakeup-cmd` template (supports `{id}`, `{sender}`, `{receiver}`, `{topic}`, `{file}`, `{attachment}`, `{dir}`, `{prompt}`, `{conv_id}`, `{client}`).
 - **Human Operator (`--client human`):** Automatically displays a native desktop notification — macOS banner via `osascript`, or Linux via `notify-send` when available. Set a custom `--wakeup-cmd` to override (e.g. smartphone push alert via Telegram / `ntfy.sh`).
 - **Skip Wakeup:** Pass `--no-wakeup` to `aimail send` to deposit the message silently without triggering the recipient.
+
+> [!NOTE]
+> The wakeup prompt references the message by its **numeric ID** (e.g. `aimail show 42`) rather than by topic, so reply-topic collisions can never misroute an agent. It is also kept free of shell metacharacters so it interpolates safely into `--wakeup-cmd` templates whether or not `{prompt}` is quoted.
 
 #### Custom Binary Paths & Flags (Environment Overrides)
 
