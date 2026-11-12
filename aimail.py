@@ -29,6 +29,32 @@ FILENAME_PATTERN = re.compile(
     r"^(?P<sender>[A-Za-z0-9_-]+)-(?P<receiver>[A-Za-z0-9_-]+)-(?P<topic>[A-Za-z0-9_]+)-(?P<timestamp>[A-Za-z0-9_T:-]+)\.md$"
 )
 
+# ── Informational-message heuristics (courtesy-reply-loop guard) ─────────────
+# Topics that usually carry a courtesy/status note rather than an actionable task.
+INFORMATIONAL_TOPICS = {
+    "hello", "hi", "hey", "ack", "ok", "okay", "thanks", "thank_you", "thx",
+    "status", "ping", "fyi", "welcome", "noted", "roger", "greetings",
+}
+# Substrings that flip a short note back into an actionable request.
+REQUEST_MARKERS = (
+    "please", "could you", "can you", "would you", "need you", "i need",
+    "implement", "fix ", "review", "verify", "investigate", "analyze", "analyse",
+    "build", "create", "add ", "update ", "refactor", "provide", "send me",
+    "report", "check ", "todo", "action required", "help me",
+)
+MAX_INFORMATIONAL_CHARS = 320
+INFORMATIONAL_HINT = (
+    "note: this looks informational; consider 'aimail close {target}' "
+    "instead of 'reply' to avoid a wakeup ping-pong."
+)
+
+# ── Capability-routing stopwords ─────────────────────────────────────────────
+ROUTE_STOPWORDS = {
+    "the", "a", "an", "to", "of", "and", "or", "for", "with", "some", "one",
+    "who", "can", "you", "need", "help", "this", "that", "into", "from", "please",
+    "get", "make", "want", "would", "should", "about", "have", "has",
+}
+
 
 def get_subdirs(messages_dir: Path):
     md_dir = messages_dir / MARKDOWN_SUBDIR
@@ -219,6 +245,128 @@ def get_canonical_user_id(conn: sqlite3.Connection, identifier: str, notify: boo
             print(f"Notice: Resolved alias/ID '{identifier}' → '{user['user_id']}'.")
         return user["user_id"]
     return identifier
+
+
+def topic_root(topic: str) -> str:
+    """Recover the originating topic by stripping trailing _reply / _replied suffixes."""
+    t = (topic or "").strip().lower()
+    changed = True
+    while changed:
+        changed = False
+        for suffix in ("_reply", "_replied"):
+            if t.endswith(suffix):
+                t = t[: -len(suffix)]
+                changed = True
+    return t
+
+
+def is_informational(topic, body="", has_attachment=False) -> bool:
+    """Heuristic: does this message look like a courtesy/status note that needs no reply?"""
+    if has_attachment:
+        return False
+    if topic_root(topic) not in INFORMATIONAL_TOPICS:
+        return False
+    body_l = (body or "").strip().lower()
+    if len(body_l) > MAX_INFORMATIONAL_CHARS:
+        return False
+    if any(marker in body_l for marker in REQUEST_MARKERS):
+        return False
+    return True
+
+
+def message_matches(cursor, target):
+    """
+    Locate message rows for an ID, exact filename, or topic/filename substring.
+    Returns (rows, exact) where exact=True means the target was unambiguous up front.
+    """
+    if target.isdigit():
+        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
+        return cursor.fetchall(), True
+    cursor.execute("SELECT * FROM messages WHERE md_file_path = ?", (target,))
+    rows = cursor.fetchall()
+    if rows:
+        return rows, True
+    cursor.execute("SELECT * FROM messages WHERE md_file_path LIKE ?", (f"%{target}%",))
+    return cursor.fetchall(), False
+
+
+def _short_ts(ts: str) -> str:
+    if len(ts) >= 15 and "_" in ts and ts[:8].isdigit():
+        return f"{ts[4:6]}-{ts[6:8]} {ts[9:11]}:{ts[11:13]}"
+    if len(ts) >= 16 and "-" in ts:
+        return ts[5:16]
+    return ts
+
+
+def format_message_matches(rows) -> str:
+    headers = ["ID", "STATUS", "FROM", "TO", "TOPIC", "TIME"]
+    data = [
+        [str(r["id"]), r["status"], r["sender_id"], r["receiver_id"], r["topic"], _short_ts(r["message_timestamp"])]
+        for r in rows
+    ]
+    return format_table(
+        headers=headers,
+        rows=data,
+        elastic_cols=[4],
+        min_widths=[2, 6, 8, 8, 14, 11],
+        max_widths=[4, 10, 14, 14, None, 11],
+    )
+
+
+def resolve_single_message(cursor, target, label="message"):
+    """
+    Resolve exactly one message for a target. Refuses to guess when a topic/filename
+    substring matches several rows, printing the candidates instead (topic collisions).
+    Returns None when nothing matches.
+    """
+    rows, exact = message_matches(cursor, target)
+    if not rows:
+        return None
+    if len(rows) == 1 or exact:
+        return rows[0]
+
+    # Prefer rows whose topic exactly equals the target (e.g. 'foo' over 'foo_reply'),
+    # so a threaded topic stays addressable by its own name.
+    exact_topic = [r for r in rows if (r["topic"] or "").lower() == target.lower()]
+    if len(exact_topic) == 1:
+        return exact_topic[0]
+    candidates = exact_topic if exact_topic else rows
+    if len(candidates) == 1:
+        return candidates[0]
+
+    print(
+        f"Error: '{target}' matches {len(candidates)} {label}s — refusing to guess. Use a message ID:",
+        file=sys.stderr,
+    )
+    print(format_message_matches(candidates), file=sys.stderr)
+    sys.exit(1)
+
+
+def print_thread_lineage(cursor, row):
+    """Print the reply chain for the current message's topic when the thread has >1 message."""
+    root = topic_root(row["topic"])
+    cursor.execute("SELECT id, sender_id, receiver_id, topic, status FROM messages ORDER BY id ASC")
+    chain = [m for m in cursor.fetchall() if topic_root(m["topic"]) == root]
+    if len(chain) <= 1:
+        return
+    print("\n--- THREAD LINEAGE ---\n")
+    for i, m in enumerate(chain):
+        prefix = "└─" if i == len(chain) - 1 else "├─"
+        marker = "  ← this message" if m["id"] == row["id"] else ""
+        print(f"  {prefix} #{m['id']} [{m['status']}] {m['sender_id']} → {m['receiver_id']} ({m['topic']}){marker}")
+
+
+def humanize_age(delta: "datetime.timedelta") -> str:
+    secs = int(max(delta.total_seconds(), 0))
+    if secs < 60:
+        return f"{secs}s"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours}h"
+    return f"{hours // 24}d"
 
 
 def format_table(
@@ -480,6 +628,61 @@ def cmd_list(args):
     )
     print(table_str)
 
+    if sys.stdout.isatty() and any(
+        is_informational(r["topic"], "", bool(r["attachment_path"])) for r in rows
+    ):
+        print("\nnote: some listed messages look informational — prefer 'aimail close <id>' over 'reply'.")
+
+
+def cmd_inbox(args):
+    """Unread digest: summarize a user's pending (new/processing) messages across all senders."""
+    messages_dir = Path(args.dir).resolve()
+    cmd_sync(args, quiet_if_zero=True)
+    conn = get_connection(messages_dir)
+    cursor = conn.cursor()
+
+    target = getattr(args, "user", None) or getattr(args, "to", None)
+    query = "SELECT * FROM messages WHERE status IN ('new','processing')"
+    params = []
+    if target:
+        canon = get_canonical_user_id(conn, target)
+        urow = resolve_user(conn, canon)
+        query += " AND (receiver_id = ? OR receiver_internal_id = ?)"
+        params.extend([canon, urow["internal_id"] if urow else None])
+    query += " ORDER BY id ASC"
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    who = target or "all receivers"
+    if not rows:
+        print(f"Inbox ({who}): no pending messages.")
+        return
+
+    now = datetime.datetime.now()
+    headers = ["ID", "STATUS", "FROM", "TOPIC", "AGE"]
+    data = []
+    for r in rows:
+        ts = r["message_timestamp"] or ""
+        age = "-"
+        try:
+            if len(ts) >= 15 and "_" in ts and ts[:8].isdigit():
+                age = humanize_age(now - datetime.datetime.strptime(ts[:15], "%Y%m%d_%H%M%S"))
+            elif "-" in ts:
+                age = humanize_age(now - datetime.datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            age = "-"
+        data.append([str(r["id"]), r["status"], r["sender_id"], r["topic"], age])
+
+    print(f"Inbox ({who}) — {len(rows)} pending\n")
+    print(format_table(
+        headers=headers,
+        rows=data,
+        elastic_cols=[3],
+        min_widths=[2, 6, 8, 16, 6],
+        max_widths=[4, 10, 14, None, 8],
+    ))
+
 
 def cmd_mark(args):
     messages_dir = Path(args.dir).resolve()
@@ -489,12 +692,7 @@ def cmd_mark(args):
     target = args.target
     new_status = args.status
 
-    if target.isdigit():
-        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
-    else:
-        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
-
-    msg_row = cursor.fetchone()
+    msg_row = resolve_single_message(cursor, target)
     if not msg_row:
         print(f"No message found matching identifier '{target}'.", file=sys.stderr)
         conn.close()
@@ -624,15 +822,10 @@ def cmd_show(args):
     cursor = conn.cursor()
 
     target = args.target
-    if target.isdigit():
-        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
-    else:
-        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
-
-    row = cursor.fetchone()
-    conn.close()
+    row = resolve_single_message(cursor, target)
 
     if not row:
+        conn.close()
         print(f"Error: Message '{target}' not found.", file=sys.stderr)
         sys.exit(1)
 
@@ -653,9 +846,11 @@ def cmd_show(args):
     if not file_path.exists():
         file_path = messages_dir / MARKDOWN_SUBDIR / Path(row["md_file_path"]).name
 
+    body_text = ""
     if file_path.exists():
+        body_text = file_path.read_text(encoding="utf-8")
         print("\n--- CONTENT PREVIEW ---\n")
-        print(file_path.read_text(encoding="utf-8"))
+        print(body_text)
         if getattr(args, "out", None):
             out_dest = Path(args.out).resolve()
             if out_dest.is_dir():
@@ -667,6 +862,15 @@ def cmd_show(args):
             print(f"\n✓ Saved markdown file to: {out_file}")
     else:
         print(f"\nWarning: File {file_path} not found on disk.")
+
+    # Thread lineage (reply chain) when this message belongs to a multi-message thread.
+    print_thread_lineage(cursor, row)
+
+    # Courtesy-reply-loop guard.
+    if is_informational(row["topic"], body_text, bool(row["attachment_path"])):
+        print(f"\n{INFORMATIONAL_HINT.format(target=row['id'])}")
+
+    conn.close()
 
 
 def check_user_busy(conn, user_id: str) -> tuple[bool, Optional[sqlite3.Row]]:
@@ -936,6 +1140,21 @@ def cmd_send(args):
     receiver_iid = receiver_u["internal_id"] if receiver_u else None
 
     topic = args.topic
+
+    # Topic-collision guard: warn when the same sender reuses a topic already in play.
+    if not getattr(args, "force", False):
+        cursor.execute(
+            "SELECT id FROM messages WHERE sender_id = ? AND topic = ? ORDER BY id ASC",
+            (sender, topic),
+        )
+        prior = cursor.fetchall()
+        if prior:
+            ids = ", ".join(f"#{p['id']}" for p in prior)
+            print(
+                f"Notice: topic '{topic}' was already used by '{sender}' in {len(prior)} prior "
+                f"thread(s): {ids}. 'show {topic}' may become ambiguous; pass --force to silence."
+            )
+
     ts = args.timestamp or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     target_md_filename = f"{sender}-{receiver}-{topic}-{ts}.md"
@@ -1005,11 +1224,7 @@ def cmd_ack(args):
     cursor = conn.cursor()
 
     target = args.target
-    if target.isdigit():
-        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
-    else:
-        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
-    msg_row = cursor.fetchone()
+    msg_row = resolve_single_message(cursor, target)
 
     if not msg_row:
         print(f"Error: Message '{target}' not found.", file=sys.stderr)
@@ -1046,16 +1261,25 @@ def cmd_reply(args):
     cursor = conn.cursor()
 
     target = args.target
-    if target.isdigit():
-        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
-    else:
-        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
-    msg_row = cursor.fetchone()
+    msg_row = resolve_single_message(cursor, target)
 
     if not msg_row:
         print(f"Error: Original message '{target}' not found.", file=sys.stderr)
         conn.close()
         sys.exit(1)
+
+    # Courtesy-reply-loop guard: nudge on informational targets (non-blocking).
+    reply_body = ""
+    try:
+        rp = messages_dir / msg_row["md_file_path"]
+        if not rp.exists():
+            rp = messages_dir / MARKDOWN_SUBDIR / Path(msg_row["md_file_path"]).name
+        if rp.exists():
+            reply_body = rp.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    if is_informational(msg_row["topic"], reply_body, bool(msg_row["attachment_path"])):
+        print(INFORMATIONAL_HINT.format(target=msg_row["id"]))
 
     original_id = msg_row["id"]
     original_sender = msg_row["sender_id"]
@@ -1093,11 +1317,7 @@ def cmd_extract(args):
     cursor = conn.cursor()
 
     target = args.target
-    if target.isdigit():
-        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
-    else:
-        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
-    row = cursor.fetchone()
+    row = resolve_single_message(cursor, target)
     conn.close()
 
     if not row:
@@ -1143,11 +1363,7 @@ def cmd_download(args):
     cursor = conn.cursor()
 
     target = args.target
-    if target.isdigit():
-        cursor.execute("SELECT * FROM messages WHERE id = ?", (int(target),))
-    else:
-        cursor.execute("SELECT * FROM messages WHERE md_file_path = ? OR md_file_path LIKE ?", (target, f"%{target}%"))
-    row = cursor.fetchone()
+    row = resolve_single_message(cursor, target)
     conn.close()
 
     if not row:
@@ -1550,6 +1766,50 @@ def cmd_user(args):
         print(table_str)
         if not is_verbose and sys.stdout.isatty() and style != "plain":
             print("Tip: Run 'aimail user show <id>' for full profile, or 'aimail users -v' for expanded IDs.")
+
+    elif action == "route":
+        need = (getattr(args, "need", None) or getattr(args, "query", "") or "").strip()
+        if not need:
+            print('Error: provide a need, e.g. aimail user route "independently verify an ED gate".', file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+
+        cursor.execute("SELECT * FROM users")
+        all_users = cursor.fetchall()
+        tokens = [
+            t for t in re.split(r"[^a-z0-9]+", need.lower())
+            if len(t) >= 3 and t not in ROUTE_STOPWORDS
+        ]
+
+        ranked = []
+        for u in all_users:
+            kw_tokens = [k for k in re.split(r"[^a-z0-9]+", (u["keywords"] or "").lower()) if k]
+            desc_tokens = [k for k in re.split(r"[^a-z0-9]+", (u["description"] or "").lower()) if len(k) >= 4]
+            score = 0
+            matched = []
+            for tok in tokens:
+                stem = tok[:4]
+                if any(k.startswith(stem) or (len(k) >= 4 and tok.startswith(k[:4])) or tok == k for k in kw_tokens):
+                    score += 3
+                    matched.append(tok)
+                elif any(d.startswith(stem) or tok.startswith(d[:4]) for d in desc_tokens):
+                    score += 1
+                    matched.append(tok)
+            if score:
+                ranked.append((score, u["user_id"], u["keywords"] or "", matched))
+
+        if not ranked:
+            print(f"No registered user matched '{need}'. Run 'aimail users' to see who is available.")
+        else:
+            ranked.sort(key=lambda x: (-x[0], x[1]))
+            top = ranked[:1] if getattr(args, "best", False) else ranked[:5]
+            print(f"Best matches for: {need}\n")
+            for score, uid, kws, matched in top:
+                uniq = ", ".join(dict.fromkeys(matched))
+                print(f"  {uid:<14} score {score:<3} matched: {uniq}")
+                print(f"  {'':<14}       caps: {kws}")
+            if not getattr(args, "best", False):
+                print(f"\nRecommended: {ranked[0][1]}")
 
     conn.close()
 
@@ -3371,6 +3631,7 @@ def main():
     p_send.add_argument("--erase-original", "--erase", action="store_true", help="Erase original file(s) after sending (applies when using --file / --attach)")
     p_send.add_argument("--timestamp", help="Custom timestamp (default: current local timestamp YYYYMMDD_HHMMSS)")
     p_send.add_argument("--no-wakeup", action="store_true", help="Skip triggering recipient's automatic wakeup command")
+    p_send.add_argument("--force", action="store_true", help="Suppress the topic-collision notice when reusing a topic")
 
     # inspect
     p_ins = subparsers.add_parser("inspect", help="Open the interactive TUI for an agent or message participant (agy or opencode)")
@@ -3427,6 +3688,11 @@ def main():
     p_u_find.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
     p_u_find.add_argument("-v", "--verbose", action="store_true", help="Show full IDs and detailed properties")
 
+    # user route
+    p_u_route = p_user_sub.add_parser("route", help="Rank registered users by relevance to a free-text need")
+    p_u_route.add_argument("need", nargs="?", help="Free-text description of what you need (e.g. 'independently verify an ED gate')")
+    p_u_route.add_argument("--best", action="store_true", help="Print only the single best match")
+
     # user rename
     p_u_ren = p_user_sub.add_parser("rename", help="Rename an agent user handle while preserving internal ID and message history")
     p_u_ren.add_argument("old_name", help="Current username, alias, or internal ID (e.g. antigravity)")
@@ -3449,6 +3715,22 @@ def main():
     p_users = subparsers.add_parser("users", help="Shortcut to list all registered users (same as 'aimail user list')")
     p_users.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
     p_users.add_argument("-v", "--verbose", action="store_true", help="Show full IDs and detailed properties")
+
+    # shortcut: aimail route <need>
+    p_route = subparsers.add_parser("route", help="Shortcut to 'aimail user route' — recommend a recipient for a need")
+    p_route.add_argument("need", nargs="?", help="Free-text description of what you need")
+    p_route.add_argument("--best", action="store_true", help="Print only the single best match")
+
+    # inbox / digest
+    p_inbox = subparsers.add_parser("inbox", help="Unread digest: summarize a user's pending (new/processing) messages")
+    p_inbox.add_argument("user", nargs="?", help="User ID whose inbox to summarize (omit for all receivers)")
+    p_inbox.add_argument("--to", dest="to", help="User ID whose inbox to summarize (same as positional)")
+    p_inbox.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
+
+    p_digest = subparsers.add_parser("digest", help="Alias for 'aimail inbox'")
+    p_digest.add_argument("user", nargs="?", help="User ID whose inbox to summarize (omit for all receivers)")
+    p_digest.add_argument("--to", dest="to", help="User ID whose inbox to summarize (same as positional)")
+    p_digest.add_argument("--style", choices=["box", "clean", "plain"], default=None, help="Table style: box (default in terminal), clean, plain")
 
     # skill
     p_skill = subparsers.add_parser("skill", help="Manage aimail skill deployment across agent platforms")
@@ -3485,6 +3767,8 @@ def main():
         cmd_sync(args)
     elif args.command == "list":
         cmd_list(args)
+    elif args.command in ("inbox", "digest"):
+        cmd_inbox(args)
     elif args.command == "mark":
         cmd_mark(args)
     elif args.command == "show":
@@ -3507,6 +3791,9 @@ def main():
         cmd_revoke(args)
     elif args.command == "rename":
         args.user_action = "rename"
+        cmd_user(args)
+    elif args.command == "route":
+        args.user_action = "route"
         cmd_user(args)
     elif args.command == "idle":
         args.user_action = "idle"
