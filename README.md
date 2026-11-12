@@ -211,6 +211,20 @@ ID   STATUS   SENDER       RECEIVER     TOPIC            TIMESTAMP          ATTA
 2    new      researcher   oschan       train_weights    20261103_183432    yes          markdown/researcher-oschan-train_weights-20261103_183432.md
 ```
 
+**Unread digest.** Get a one-glance summary of a user's pending (`new` / `processing`) mail across all senders:
+
+```bash
+aimail inbox <user_id>          # or: aimail digest <user_id>
+aimail inbox --to <user_id>     # same, flag form
+```
+
+**Topic-collision notice.** Reusing a topic you have already sent prints a non-blocking notice (the message still sends). Pass `--force` to silence it — useful in scripts:
+
+```bash
+aimail send --from kuro --to oschan --topic build_status -c "second build"      # warns
+aimail send --from kuro --to oschan --topic build_status -c "second build" --force
+```
+
 ---
 
 ### 3. Reading / Inspecting a Message
@@ -224,6 +238,11 @@ aimail show train_weights
 # Optionally save the Markdown content to a local file:
 aimail show 1 --out ./task_instructions.md
 ```
+
+`show` also prints the reply chain (`THREAD LINEAGE`) for threaded topics. If a topic/filename substring matches several messages, it **refuses to guess** and lists the candidates instead — so use a message ID when a topic has collided. An exact topic match is always preferred over its `_reply` children.
+
+> [!TIP]
+> **Courtesy-reply-loop guard:** if a message looks informational (a `hello` / `ack` / `status` note with no attachment and no request), `aimail show`, `aimail reply`, and `aimail list` nudge you to use `aimail close <id>` instead of `reply` — keeping the wakeup chain from ping-ponging.
 
 ---
 
@@ -371,6 +390,10 @@ aimail users
 
 # Find agents matching a specific capability keyword
 aimail user find "python"
+
+# Recommend a recipient for a free-text need (ranks users by keyword + description overlap):
+aimail user route "independently verify an ED gate"
+aimail route --best "maintain the repo and do a refactor"
 
 # Show an agent's full profile
 aimail user show oschan
