@@ -1178,7 +1178,19 @@ def cmd_send(args):
 
     ts = args.timestamp or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    target_md_filename = f"{sender}-{receiver}-{topic}-{ts}.md"
+    # Ensure a unique filename: two sends with the same sender/receiver/topic within
+    # the same second would otherwise collide on md_file_path (UNIQUE) and clobber the
+    # file. The suffix uses '_' (not '-') so the filename grammar still parses cleanly.
+    existing_paths = {r["md_file_path"] for r in cursor.execute("SELECT md_file_path FROM messages").fetchall()}
+    stem = f"{sender}-{receiver}-{topic}-{ts}"
+    seq = 1
+    while ((md_dir / f"{stem}.md").exists()
+           or f"{MARKDOWN_SUBDIR}/{stem}.md" in existing_paths
+           or any(att_dir.glob(f"{stem}.*"))):
+        seq += 1
+        stem = f"{sender}-{receiver}-{topic}-{ts}_{seq}"
+
+    target_md_filename = f"{stem}.md"
     target_md_path = md_dir / target_md_filename
     db_md_path = f"{MARKDOWN_SUBDIR}/{target_md_filename}"
 
@@ -1199,7 +1211,7 @@ def cmd_send(args):
             ext = "." + ".".join(source_attach.name.split(".")[-2:])
         else:
             ext = source_attach.suffix
-        target_attach_filename = f"{sender}-{receiver}-{topic}-{ts}{ext}"
+        target_attach_filename = f"{stem}{ext}"
         target_attach_path = att_dir / target_attach_filename
         db_attach_path = f"{ATTACHMENTS_SUBDIR}/{target_attach_filename}"
         shutil.copy2(source_attach, target_attach_path)

@@ -86,6 +86,8 @@ Every message follows a deterministic naming convention:
 - **`topic`**: Purpose or action descriptor (e.g. `daily_sync`, `bugfix_task`, `deploy`).
 - **`timestamp`**: Sorting timestamp formatted as `YYYYMMDD_HHMMSS`.
 
+> If two messages would otherwise produce the same filename (same sender/receiver/topic within the same second), a numeric suffix is appended: `…-<timestamp>_2.md`. The suffix uses `_` so the filename grammar still parses cleanly.
+
 ---
 
 ## 🗄️ Database Schema
@@ -611,6 +613,20 @@ Features and architectural ideas ranked by implementation priority:
 - [ ] **Human Escalation Alarm:** When a critical task fails or an agent crashes, automatically escalate to human operator `kuro` via desktop banner or smartphone alert:
   - *"⚠️ Task #24 to 'coder' failed: Model quota exceeded. Human intervention required."*
 - [ ] **Diagnostic & Recovery CLI:** Add `aimail doctor` (verifies agent conversation IDs and binaries) and `aimail retry <id>` to re-trigger failed message dispatches.
+
+---
+
+## 🧪 Testing
+
+The repo ships a dependency-free test suite (stdlib `unittest`, Python 3.9+) that drives the real CLI against isolated temporary mailboxes — no live data is touched, and wakeups are disabled except where a prompt is explicitly under test.
+
+```bash
+python3 -m unittest discover -s tests -v
+# or
+python3 tests/test_aimail.py
+```
+
+It covers send/list/show/reply, the informational nudge (stdout vs stderr streams), topic-collision handling and disambiguation, exact-topic-vs-`_reply` resolution, filename uniquifying, capability routing, the inbox digest, the wakeup prompt shape, and the informational heuristic as unit tests. Treat a green run as the gate for pushing to `main`.
 
 ---
 
