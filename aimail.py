@@ -1162,7 +1162,8 @@ def cmd_send(args):
     topic = args.topic
 
     # Topic-collision guard: warn when the same sender reuses a topic already in play.
-    if not getattr(args, "force", False):
+    # Skipped for replies, which deliberately keep the thread's topic.
+    if not getattr(args, "force", False) and not getattr(args, "_is_reply", False):
         cursor.execute(
             "SELECT id FROM messages WHERE sender_id = ? AND topic = ? ORDER BY id ASC",
             (sender, topic),
@@ -1326,6 +1327,7 @@ def cmd_reply(args):
     else:
         args.topic = f"{original_topic}_reply"
     args.timestamp = getattr(args, "timestamp", None)
+    args._is_reply = True  # replies reuse the thread topic; skip the collision notice
 
     cmd_send(args)
     check_and_dequeue_next(messages_dir, original_receiver)
